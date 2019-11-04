@@ -11,3 +11,27 @@ linux_task:
     - make -j all modules
   test_script:
     - make check
+
+macos_task:
+  osx_instance:
+    image: mojave-base
+  setup_script:
+    - git fetch --tags
+  configure_script:
+    - ./configure
+  compile_script:
+    - make -j all modules
+  test_script:
+    - make check
+
+freebsd_task:
+  freebsd_instance:
+    image: freebsd-12-0-release-amd64
+  setup_script:
+    - git fetch --tags
+  configure_script:
+    - ./configure
+  compile_script:
+    - make -j all modules
+  test_script:
+    - make check
