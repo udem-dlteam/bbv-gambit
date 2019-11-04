@@ -7,5 +7,6 @@ task:
     - git fetch --tags
     - ./configure
     - make
+    - make modules
   tests_script:
     - make check
