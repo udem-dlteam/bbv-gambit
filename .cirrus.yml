@@ -6,5 +6,7 @@ task:
   build_script:
     - git fetch --tags
     - ./configure
-    - make -j
-  tests_script: make check
+    - make
+  tests_script:
+    - gsi tests/process-issue.scm
+    - make check
