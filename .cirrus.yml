@@ -8,5 +8,4 @@ task:
     - ./configure
     - make
   tests_script:
-    - gsi/gsi tests/process-issue.scm
     - make check
