@@ -4,5 +4,5 @@ task:
   build_script:
     - git fetch --tags
     - ./configure
-    - make -j
+    - make
   tests_script: make check
