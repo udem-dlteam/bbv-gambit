@@ -28,6 +28,7 @@ freebsd_task:
   freebsd_instance:
     image: freebsd-12-0-release-amd64
   setup_script:
+    - pkg install -y git
     - git fetch --tags
   configure_script:
     - ./configure
