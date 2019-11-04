@@ -1,12 +1,13 @@
-container:
-  image: gcc:latest
-  cpu: 8
-  memory: 24
-task:
-  build_script:
+linux_task:
+  container:
+    image: gcc:latest
+    cpu: 8
+    memory: 24
+  setup_script:
     - git fetch --tags
+  configure_script:
     - ./configure
-    - make
-    - make modules
-  tests_script:
+  compile_script:
+    - make -j all modules
+  test_script:
     - make check
