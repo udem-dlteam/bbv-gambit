@@ -8,7 +8,7 @@ linux_task:
   configure_script:
     - ./configure
   compile_script:
-    - make -j all modules
+    - make all modules
   test_script:
     - make check
 
@@ -20,7 +20,7 @@ macos_task:
   configure_script:
     - ./configure
   compile_script:
-    - make -j all modules
+    - make all modules
   test_script:
     - make check
 
@@ -33,6 +33,6 @@ freebsd_task:
   configure_script:
     - ./configure
   compile_script:
-    - make -j all modules
+    - make all modules
   test_script:
     - make check
