@@ -1,8 +1,10 @@
 container:
   image: gcc:latest
+  cpu: 8
+  memory: 24
 task:
   build_script:
     - git fetch --tags
     - ./configure
-    - make
+    - make -j
   tests_script: make check
