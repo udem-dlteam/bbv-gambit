@@ -36,3 +36,18 @@ freebsd_task:
     - make all modules
   test_script:
     - make check
+
+cygwin_task:
+  windows_container:
+    image: cirrusci/windowsservercore:2019
+    os_version: 2019
+  setup_script:
+    - choco install -y --no-progress cygwin
+    - c:\tools\cygwin\cygwinsetup -q -P binutils,gcc-core,make
+    - git fetch --tags
+  configure_script:
+    - c:\tools\cygwin\bin\bash --login "%CD%\ci\cygwin.sh" configure
+  compile_script:
+    - c:\tools\cygwin\bin\bash --login "%CD%\ci\cygwin.sh" compile
+  test_script:
+    - c:\tools\cygwin\bin\bash --login "%CD%\ci\cygwin.sh" test
