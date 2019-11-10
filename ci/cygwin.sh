@@ -6,8 +6,6 @@ echo "Entering directory '$PWD'"
 case "$1" in
 configure)
     set -x
-    ls -l config*
-    gcc -v
     touch configure
     ./configure --enable-debug --enable-multiple-threaded-vms CC=gcc
     ;;
