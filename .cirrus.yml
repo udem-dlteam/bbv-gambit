@@ -51,3 +51,14 @@ cygwin_task:
     - c:\tools\cygwin\bin\bash --login "%CD%\ci\cygwin.sh" compile
   test_script:
     - c:\tools\cygwin\bin\bash --login "%CD%\ci\cygwin.sh" test
+
+mvsc_task:
+  windows_container:
+    image: cirrusci/windowsservercore:2019
+    os_version: 2019
+  setup_script:
+    - choco install -y --no-progress visualstudio2017community
+    - choco install -y --no-progress visualstudio2017-workload-vctools
+    - git fetch --tags
+  configure_script:
+    - which cl make
