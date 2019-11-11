@@ -1,0 +1,3 @@
+FROM cirrusci/windowsservercore:2019
+RUN choco install -y --no-progress visualstudio2017community
+RUN choco install -y --no-progress visualstudio2017-workload-vctools
