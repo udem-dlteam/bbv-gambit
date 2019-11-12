@@ -32,10 +32,17 @@ freebsd_task:
     - git fetch --tags
   configure_script:
     - ./configure
+      --prefix=$HOME/.gambit_builds/$CIRRUS_BRANCH
+      --enable-gambitdir=~/.gambit_builds/$CIRRUS_BRANCH
   compile_script:
     - make all modules
   test_script:
     - make check
+  snapshot_script:
+    - make install
+    - tar -czf /gambit-$CIRRUS_BRANCH.tgz $HOME/.gambit_builds/$CIRRUS_BRANCH/
+  binaries_artifacts:
+    path: "/gambit-*.tgz"
 
 cygwin_task:
   windows_container:
