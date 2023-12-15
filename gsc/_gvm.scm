@@ -409,6 +409,12 @@
 (define (bb-entry-frame-size bb)
   (frame-size (gvm-instr-frame (bb-label-instr bb))))
 
+(define (bb-entry-nb-params bb)
+  (let ((lbl (bb-label-instr bb)))
+    (if (eq? (label-kind lbl) 'entry)
+      (label-entry-nb-parms lbl)
+      #f)))
+
 (define (bb-exit-frame-size bb)
   (frame-size (gvm-instr-frame (bb-branch-instr bb))))
 
@@ -3009,6 +3015,11 @@
                                      (locenv-set types-after*
                                                  result-loc
                                                  (make-type-top-with-new-length-bound))))
+                               (set! types-after
+                                (locenv-set
+                                  types-after
+                                  (gvm-loc->locenv-index types-after (make-reg 0))
+                                  (make-type-top-with-new-length-bound)))
                                (reach-ret* ret
                                        types-return
                                        (+ (- cost instr-cost) call-cost)
@@ -5370,6 +5381,31 @@
       (get-expected-type-at-frame types (stk-num loc)))
     (else (error "cannot get expected type from" loc))))
 
+(define (instr-for-each-type instr proc)
+  (let ((types (gvm-instr-types instr)))
+    (if types ;; nothing to do if no types, happens when version limit is at 0
+        (let* ((type-locs (vector-ref types 0))
+               (n-registers (vector-ref type-locs 0))
+               (n-slots (vector-ref type-locs 1))
+               (n-free (vector-ref type-locs 2))
+               (frame (gvm-instr-frame instr))
+               (regs (frame-regs frame))
+               (slots (frame-slots frame)))
+
+          (for-each
+            (lambda (reg index)
+              (if (frame-live? (list-ref regs reg) frame)
+                  (proc (make-reg reg) (vector-ref types index))))
+            (iota n-registers)
+            (iota n-registers (+ locenv-start-regs 1) 2))
+
+          (for-each
+            (lambda (slot index)
+              (if (frame-live? (list-ref slots (- slot 1)) frame)
+                  (proc (make-stk slot) (vector-ref types index))))
+            (iota n-slots 1)
+            (iota n-slots (+ locenv-start-regs (* 2 n-registers) 1) 2))))))
+
 (define (assert-types state instr)
   (define tctx (make-tctx))
   (define rte (InterpreterState-rte state))
@@ -5408,33 +5444,70 @@
       (cons type-box-bit       box?)
       (cons type-promise-bit   promise?)))
 
+    ;; Gather length relations between objects in rte
+    (define (generic-length obj)
+      (cond
+        ((vector? obj) (vector-length obj))
+        ((string? obj) (string-length obj))
+        ((u8vector? obj) (u8vector-length obj))
+        (else #f)))
+    (define length-table (make-table))
+    (define (length-table-set! id len) (table-set! length-table id len))
+    (define (length-table-ref id) (table-ref length-table id #f))
+
+    (define (register-lengths)
+      (instr-for-each-type
+        instr
+        (lambda (loc expected-type)
+          (let* ((value (InterpreterState-ref state loc safe: #f))
+                 (maybe-length (generic-length value))
+                 (length-range (type-motley-length-range (type-motley-force tctx expected-type)))
+                 (lo (type-fixnum-range-lo length-range))
+                 (hi (type-fixnum-range-hi length-range)))
+            (if (and
+                  maybe-length
+                  (length-bound? lo)
+                  (length-bound? hi)
+                  (length-bound-same-object? lo hi))
+              (length-table-set! (length-bound-object lo) maybe-length))))))
+
   (define (typecheck throw-error value expected-type)
     (define motley-type (type-motley-force tctx expected-type))
   
     (define (typecheck-generic)
-      (define (allowed? bit) (not (zero? (bitwise-and bit motley-bits))))
-      (define motley-bits (type-motley-bitset motley-type))
+      (define motley-mutable-bits (type-motley-mut-bitset motley-type))
+      (define motley-non-mutable-bits (type-motley-not-mut-bitset motley-type))
+
+      (define (allowed-mutable? bit) (not (zero? (bitwise-and bit motley-mutable-bits))))
+      (define (allowed-non-mutable? bit) (not (zero? (bitwise-and bit motley-non-mutable-bits))))
+
+      (define (allowed? bit value)
+        (or
+          (and (allowed-mutable? bit) (mutable? value))
+          (and (allowed-non-mutable? bit) (not (mutable? value)))))
+
+      (define (mutable? x) (and (##mem-allocated? x) (##mutable? x)))
+
       (let loop ((bit-checker-pair bits-to-checker))
         (if (null? bit-checker-pair)
-            (or (fixnum? value) (allowed? type-other-bit)) ;; at this point all tracked types have been tested
-            (if ((cdar bit-checker-pair) value)
-                (allowed? (caar bit-checker-pair))
-                (loop (cdr bit-checker-pair))))))
+            (or (fixnum? value) (allowed? type-other-bit value))
+            (let ((bit (caar bit-checker-pair))
+                  (checker (cdar bit-checker-pair)))
+              (if (checker value)
+                (allowed? bit value)
+                (loop (cdr bit-checker-pair)))))))
 
     (define (typecheck-fixnum)
       (let* ((fixnum-range (type-motley-fixnum-range motley-type))
              (lo (type-fixnum-range-lo fixnum-range))
              (hi (type-fixnum-range-hi fixnum-range)))
 
-        (define (get-actual-length length-bound)
-          (InterpreterState-length-of state (length-bound-object length-bound)))
-
         (define (actual-length-compare comp value length-bound)
-          (let ((actual-length (get-actual-length length-bound))
-                (offset (length-bound-offset length-bound)))
-            (if actual-length
-                (comp value (+ actual-length offset))
-                #t))) ;; object not longer live?
+          (let* ((object (length-bound-object length-bound))
+                 (offset (length-bound-offset length-bound))
+                 (actual-length (length-table-ref object)))
+            (or (not actual-length) ;; object unknown
+                (comp value (+ actual-length offset)))))
 
         (define (actual-length<= value length-bound)
           (actual-length-compare <= value length-bound))
@@ -5456,55 +5529,26 @@
 
         (or (not (fixnum? value)) (and (over-lo? value) (below-hi? value)))))
 
-    (define (typecheck-mutability)
-      (let ((mutability (type-motley-mutability motley-type)))
-        (cond
-          ((eq? mutability type-neg-mutability) (not (##mutable? value))) ;; not mutable
-          ((eq? mutability type-pos-mutability) (##mutable? value))       ;; mutable
-          ((eq? mutability type-top-mutability) (##mem-allocated? value)) ;; unknown, but defined
-          (else (not (##mem-allocated? value))))))                        ;; undefined, because not a structure
-
-    (if (not (and (typecheck-fixnum) (typecheck-generic) (typecheck-mutability)))
+    (when (not (and (typecheck-fixnum) (typecheck-generic)))
         (throw-error)))
 
-  (define (throw-error slot-kind slot-num value expected)
-    (error "GVM type error: in bb" (bb-lbl-num bb) slot-kind slot-num "has value" value "but expected type" expected))
+  (define (throw-error slot-num value expected)
+    (error "GVM type error: in bb" (bb-lbl-num bb) slot-num "has value" value "but expected type" expected))
 
-  (let ((types (gvm-instr-types instr)))
-    (if types ;; nothing to do if no types, happens when version limit is at 0
-        (let* ((type-locs (vector-ref types 0))
-               (n-registers (vector-ref type-locs 0))
-               (n-slots (vector-ref type-locs 1))
-               (n-free (vector-ref type-locs 2))
-               (frame (gvm-instr-frame instr))
-               (regs (frame-regs frame))
-               (slots (frame-slots frame)))
+  (register-lengths)
+  (instr-for-each-type
+    instr
+    (lambda (loc expected-type)
+      (let ((value (InterpreterState-ref state loc safe: #f)))
+        (if (not (eq? value empty-stack-slot))
+          (typecheck
+            (lambda () (throw-error loc value expected-type))
+            value
+            expected-type))))))
 
-          (for-each
-            (lambda (reg index)
-              (if (frame-live? (list-ref regs reg) frame)
-                  (let ((value (RTE-registers-ref rte reg))
-                        (expected (vector-ref types index)))
-                    (typecheck  (lambda () (throw-error "register" reg value expected))
-                                value
-                                expected))))
-            (iota n-registers)
-            (iota n-registers (+ locenv-start-regs 1) 2))
-
-          (for-each
-            (lambda (slot index)
-              (if (frame-live? (list-ref slots (- slot 1)) frame)
-                  (let ((value (RTE-frame-ref rte slot))
-                        (expected (vector-ref types index)))
-                    (typecheck  (lambda () (throw-error "slot" slot value expected))
-                                value
-                                expected))))
-            (iota n-slots 1)
-            (iota n-slots (+ locenv-start-regs (* 2 n-registers) 1) 2))))))
-
-(define backend-nb-arg-registers 3) ;; TODO: get from backend
-(define backend-return-label-location 0) ;; register 0
-(define backend-return-result-location 8) ;; register 1
+(define backend-nb-args-in-registers 3) ;; TODO: get from backend
+(define backend-return-label-location (reg-num 0)) ;; register 0
+(define backend-return-result-location (make-reg 1))
 
 (define (gvm-interpret module-procs)
   ;; comment/uncomment to stop execution or not when an error happens in the GVM interpreter
@@ -5534,8 +5578,7 @@
   instr-index
   done?
   ;; traces
-  primitive-counter
-  length-bounds)
+  primitive-counter)
 
 (define exit-return-address (gensym 'exit-return-address))
 
@@ -5560,25 +5603,9 @@
             (lbl-num->bb entry-lbl-num main-bbs)  ;; bb
             0                                     ;; instr index
             #f                                    ;; done
-            (make-table)                          ;; primitive counter
-            (make-table                           ;; length-bounds
-              test: length-bound-object-eqv?
-              ;;weak-values: #t
-            ))))             
+            (make-table))))                       ;; primitive counter
     (RTE-registers-set! (InterpreterState-rte state) 0 exit-return-address)
     state))
-
-(define (InterpreterState-length-bounds-register! state representative vector-like)
-  (table-set! (InterpreterState-length-bounds state) representative vector-like))
-
-(define (InterpreterState-length-of state representative)
-  (define (generic-length obj)
-    (cond
-      ((vector? obj) (vector-length obj))
-      ((string? obj) (string-length obj))
-      ((u8vector? obj) (u8vector-length obj))))
-  (let ((vector-like (table-ref (InterpreterState-length-bounds state) representative #f)))
-    (and vector-like (generic-length vector-like))))
 
 (define (InterpreterState-primitive-counter-increment state name)
   (let ((table (InterpreterState-primitive-counter state)))
@@ -5673,8 +5700,9 @@
          (target (InterpreterState-ref state opnd)))
     (InterpreterState-transition state target nargs ret)))
 
-(define (InterpreterState-transition state target nargs ret)
-  (let ((current-bbs (InterpreterState-bbs state)))
+(define (InterpreterState-transition state target nargs ret #!key exit-fs)
+  (let* ((current-bbs (InterpreterState-bbs state))
+         (exit-fs (or exit-fs (bb-exit-frame-size (InterpreterState-bb state)))))
     (cond
       ((eq? target exit-return-address)
         (mark-exit-jump state)
@@ -5685,6 +5713,7 @@
         (let ((target-bbs (Label-bbs target)))
           (InterpreterState-transition-to-bb
             state
+            exit-fs
             target-bbs
             (lbl-num->bb (Label-id target) target-bbs)
             nargs
@@ -5696,6 +5725,7 @@
                (lbl-id (Label-id clo-lbl)))
         (InterpreterState-transition-to-bb
             state
+            exit-fs
             lbl-bbs
             (lbl-num->bb lbl-id lbl-bbs)
             nargs
@@ -5721,8 +5751,11 @@
       ((proc-obj? target)
         (let* ((target-bbs (proc-obj-code target))
                (target-entry-lbl (bbs-entry-lbl-num target-bbs)))
+          (when interpreter-debug-trace?
+            (println "Entering procedure: " (proc-obj-name target)))
           (InterpreterState-transition-to-bb
             state
+            exit-fs
             target-bbs
             (lbl-num->bb target-entry-lbl target-bbs)
             nargs
@@ -5810,14 +5843,14 @@
     (if closed? (RTE-set! rte (get-closure-loc params-info) clo))
     (for-each (lambda (loc a) (RTE-set! rte loc a)) args-loc (vector->list actual-params))))
 
-(define (InterpreterState-transition-to-bb state target-bbs target-bb nargs ret clo)
+(define (InterpreterState-transition-to-bb state exit-fs target-bbs target-bb nargs ret clo)
   (let* ((rte (InterpreterState-rte state))
          (stack (RTE-stack rte))
          (current-bbs (InterpreterState-bbs state))
          (current-bb (InterpreterState-bb state))
          (target-label (bb-label-instr target-bb)))
     (increment-branch-counter (InterpreterState-current-instruction state) target-bbs target-bb)
-    (Stack-frame-exit! stack (bb-exit-frame-size current-bb))
+    (Stack-frame-exit! stack exit-fs)
     (if (eq? (label-kind target-label) 'entry)
         (InterpreterState-align-args
           state
@@ -5868,7 +5901,7 @@
         (bbs-entry-lbl-num (Label-bbs o))))
     ((Closure? o)
       (pp-with-tag "closure"))
-    ((eq? o 'empty-stack-slot)
+    ((eq? o empty-stack-slot)
       (display ".\n"))
     ((symbol? o)
       (println "'" o))
@@ -5881,40 +5914,51 @@
                       s))
         (display "\n")))))
 
-(define (InterpreterState-debug-log state)
+(define (InterpreterState-debug-log state #!key (shift-left 0) (shift-right 0))
   (when interpreter-debug-trace?
     (let* ((rte (InterpreterState-rte state))
            (registers (RTE-registers rte))
            (bb (InterpreterState-bb state))
            (entry-fs (bb-entry-frame-size bb))
            (exit-fs (bb-exit-frame-size bb))
+           (shift-left (+ shift-left (or (bb-entry-nb-params bb) 0)))
            (instr (InterpreterState-current-instruction state))
            (nargs (if (eq? (gvm-instr-kind instr) 'jump)
                       (or (jump-nb-args instr) 0)
                       0)))
       (println "In basic block #" (bb-lbl-num bb))
-      (println "Registers:")
+      (println "  Registers:")
       (for-each
         (lambda (i)
-          (print i)
+          (print "    " i)
           (print ": ")
           (pp-gvm-obj (stretchable-vector-ref registers i)))
         (iota (stretchable-vector-length registers)))
-      (println "Frame:")
+      (println "  Frame:")
       (for-each
         (lambda (i) 
-          (print i ": " )
+          (print "    " i ": " )
           (pp-gvm-obj (RTE-frame-ref rte i)))
-        (iota (+ nargs (max entry-fs exit-fs)) 1))
-      (println "Instruction:")
+        (iota (max entry-fs (+ nargs shift-left shift-right exit-fs)) (- 1 shift-left)))
+      (println "  Instruction:")
+      (print "    ")
       (write-gvm-instr (InterpreterState-current-instruction state) (current-output-port))
       (println)
       (println "---"))))
 
-(define (InterpreterState-ref state target)
+(define-macro (define-safe-getter signature . body)
+  (let* ((signature-extension (list '#!key (list 'safe #t)))
+         (safe-signature (append signature signature-extension))
+         (guarded-body
+          `(let ((result (begin ,@body)))
+              (if (and safe (eq? result empty-stack-slot)) (error "When reading empty slot"))
+              result)))
+    `(define ,safe-signature ,guarded-body)))
+
+(define-safe-getter (InterpreterState-ref state target)
   (if (lbl? target)
     (make-Label (InterpreterState-bbs state) (lbl-num target))
-    (RTE-ref (InterpreterState-rte state) target)))
+    (RTE-ref (InterpreterState-rte state) target safe: safe)))
 
 (define-type RTE
   ;; run time environment
@@ -5961,7 +6005,8 @@
               (stack (RTE-stack rte))
               (proc (car args))
               (proc-args (cadr args))
-              (nargs (length proc-args)))
+              (nargs (length proc-args))
+              (dummy-fs (max 0 (- nargs backend-nb-args-in-registers))))
         (define r0 (RTE-ref rte backend-return-label-location))
 
         ;; create a dummy frame for arguments
@@ -5973,7 +6018,7 @@
           (iota nargs)
           proc-args)
         ;; prepare the frame for the callee
-        (Stack-frame-exit! stack nargs)
+        (Stack-frame-exit! stack dummy-fs)
         (InterpreterState-transition
           state
           proc
@@ -5985,7 +6030,8 @@
               (Stack-frame-enter! stack fs)
               ;; return result
               (RTE-set! rte backend-return-label-location r0)
-              (cont (RTE-ref rte backend-return-result-location))))))))
+              (cont (RTE-ref rte backend-return-result-location))))
+          exit-fs: dummy-fs))))
 
   (register!
     "##map"
@@ -5995,7 +6041,8 @@
               (stack (RTE-stack rte))
               (proc (car proc-and-args))
               (arg-lists (cdr proc-and-args))
-              (nargs (length arg-lists)))
+              (nargs (length arg-lists))
+              (dummy-fs (max 0 (- nargs backend-nb-args-in-registers))))
         (define r0 (RTE-ref rte backend-return-label-location))
 
         (define acc '())
@@ -6023,7 +6070,7 @@
                     (iota nargs)
                     args)
                   ;; prepare the frame for the callee
-                  (Stack-frame-exit! stack nargs)
+                  (Stack-frame-exit! stack dummy-fs)
                   ;; call
                   (InterpreterState-transition
                     state
@@ -6034,7 +6081,8 @@
                         ;; store result
                         (set! acc (cons (RTE-ref rte backend-return-result-location) acc))
                         ;; continue map iteration
-                        (loop)))))
+                        (loop)))
+                    exit-fs: dummy-fs))
                 (return))))
         ;; create a dummy frame for arguments
         (Stack-frame-exit! stack fs)
@@ -6045,24 +6093,6 @@
     "##first-argument"
     (lambda (state args cont)
       (cont (if (null? (cdr args)) (car args) (cadr args)))))
-
-  (for-each
-    (lambda (name prim)
-      ;; set a primitive that registers the length
-      (register!
-        name
-        (lambda (state args cont)
-          (let* ((v (car args))
-                 (instr (InterpreterState-current-instruction state))
-                 (loc (and (eq? (gvm-instr-kind instr) 'apply)
-                           (apply-loc instr)))
-                 (type (get-expected-type-at (gvm-instr-types instr) loc))
-                 (length-bound (type-fixnum-range-lo (type-motley-fixnum-range type)))
-                 (representative (length-bound-object length-bound)))
-            (InterpreterState-length-bounds-register! state representative v)
-            (cont (apply prim args))))))
-    '("##vector-length" "##string-length")
-    (list ##vector-length ##string-length))
 
   (add-default-primitive-to-primitives-table! primitives-table)
   (add-primitive-counter-to-primitives-table! primitives-table)
@@ -6084,8 +6114,8 @@
 (define (RTE-global-set! rte name v) (table-set! (RTE-global-env rte) name v))
 (define (RTE-primitive-ref rte name) (table-ref (RTE-primitives rte) name))
 
-(define (RTE-args-ref rte nargs i)
-  (let* ((nb-arg-registers (min nargs backend-nb-arg-registers))
+(define-safe-getter (RTE-args-ref rte nargs i)
+  (let* ((nb-arg-registers (min nargs backend-nb-args-in-registers))
          (nb-arg-frames (- nargs nb-arg-registers))
          (stack (RTE-stack rte)))
     (if (< i nb-arg-frames)
@@ -6093,7 +6123,7 @@
         (RTE-registers-ref rte (- i nb-arg-frames -1)))))
   
 (define (RTE-param-set! rte nparams i param)
-  (let* ((nb-param-registers (min nparams backend-nb-arg-registers))
+  (let* ((nb-param-registers (min nparams backend-nb-args-in-registers))
          (nb-param-frames (- nparams nb-param-registers))
          (stack (RTE-stack rte)))
     (if (< i nb-param-frames)
@@ -6108,14 +6138,16 @@
     ((clo? target) (Closure-set! (RTE-ref rte (clo-base target)) (clo-index target) value))
     (else (error "cannot write to" target))))
 
-(define (RTE-ref rte target)
-  (cond
-    ((reg? target) (RTE-registers-ref rte (reg-num target)))
-    ((stk? target) (RTE-frame-ref rte (stk-num target)))
-    ((glo? target) (RTE-global-ref rte (glo-name target)))
-    ((clo? target) (Closure-ref (RTE-ref rte (clo-base target)) (clo-index target)))
-    ((obj? target) (obj-val target))
-    (else (error "cannot read from" target))))
+(define-safe-getter (RTE-ref rte target)
+  (let ((result
+          (cond
+            ((reg? target) (RTE-registers-ref rte (reg-num target)))
+            ((stk? target) (RTE-frame-ref rte (stk-num target)))
+            ((glo? target) (RTE-global-ref rte (glo-name target)))
+            ((clo? target) (Closure-ref (RTE-ref rte (clo-base target)) (clo-index target)))
+            ((obj? target) (obj-val target))
+            (else (error "cannot read from" target)))))
+    result))
 
 (define-type Stack
   frame-pointer
