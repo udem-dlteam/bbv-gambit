@@ -336,6 +336,12 @@
 (define (lbl-obj-lbl obj)     (vector-ref obj 1))
 (define (lbl-obj-new-lbl obj) (vector-ref obj 2))
 
+(define (lbl-obj-eqv? lbl-obj1 lbl-obj2)
+  (and (eqv? (lbl-obj-lbl lbl-obj1)
+             (lbl-obj-lbl lbl-obj2))
+       (eqv? (lbl-obj-new-lbl lbl-obj1)
+             (lbl-obj-new-lbl lbl-obj2))))
+
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 ;;
 ;; Basic block set manipulation:
@@ -1043,7 +1049,7 @@
                                       #f))))
 
                           (let* ((new-fs (+ fs (bb-slots-gained dest-bb)))
-                                 (new-frame (frame-truncate
+                                 (new-frame (frame-truncate ;; TODO: fix r0 missing from live vars
                                              (gvm-instr-frame branch)
                                              new-fs))
                                  (new-types (types-truncate
@@ -1163,7 +1169,7 @@
                                     (not (eqv? new-poll? poll?))
                                     (not (= lbl dest-lbl)))
                                 (let* ((new-frame
-                                        (frame-truncate
+                                        (frame-truncate ;; TODO: fix r0 missing from live vars
                                          (gvm-instr-frame branch)
                                          fs))
                                        (new-types

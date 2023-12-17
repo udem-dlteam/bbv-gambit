@@ -7951,8 +7951,12 @@
   (car type))
 
 (define (type-singleton-eqv? type1 type2)
-  (eqv? (type-singleton-val type1)
-        (type-singleton-val type2)))
+  (let ((val1 (type-singleton-val type1))
+        (val2 (type-singleton-val type2)))
+    (or (eqv? val1 val2)
+        (and (lbl-obj? val1)
+             (lbl-obj? val2)
+             (lbl-obj-eqv? val1 val2)))))
 
 (define (type-singleton-of-type? tctx value-of-type? type)
   (and (type-singleton? type)
