@@ -7077,6 +7077,12 @@
 (def-type-narrow "fl>"  (type-narrow-fold type-narrow-fl>))
 (def-type-narrow "fl>=" (type-narrow-fold type-narrow-fl>=))
 
+(def-type-narrow "eq?"
+  (lambda (tctx args)
+    (let ((arg1 (car args))
+          (arg2 (cadr args)))
+      (type-narrow-invert (type-narrow-eq? tctx arg1 arg2)))))
+
 (def-type-infer "identity"
   (lambda (tctx args)
     (let ((arg (car args)))
@@ -7525,13 +7531,6 @@
 (define (type-motley-not-mut-bitset type) (vector-ref type 1))
 (define (type-motley-length-range type)   (vector-ref type 2))
 (define (type-motley-fixnum-range type)   (vector-ref type 3))
-
-;; values for mutability property:
-
-(define type-bot-mutability 0) ;; undefined mutability
-(define type-neg-mutability 1) ;; certainly not mutable
-(define type-pos-mutability 2) ;; certainly mutable
-(define type-top-mutability 3) ;; possibly immutable or mutable
 
 ;;deprecated:
 (define (type-fixnum-lo type) (type-fixnum-range-lo (type-motley-fixnum-range type)))
@@ -8039,6 +8038,10 @@
                     (make-type-motley-non-fixnum type-flonum-bit)))
                (else
                 (make-type-motley-non-fixnum type-cpxnum-bit))))
+        ((proc-obj? obj)
+         type-procedure)
+        ((lbl-obj? obj)
+         (make-type-motley-non-fixnum (+ type-procedure-bit type-other-bit)))
         ((char? obj)
          type-char)
         ((symbol-object? obj)
@@ -8071,8 +8074,6 @@
          type-f64vector)
         ((pair? obj)
          type-pair)
-        ((proc-obj? obj)
-         type-procedure)
         ((box-object? obj)
          type-box)
 ;;        ((promise-object? obj)
@@ -10163,6 +10164,10 @@
         (cons
          #f
          (and false1 (list arg1 arg2))))))
+
+(define (type-narrow-eq? tctx arg1 arg2)
+  (cons (list arg1 arg2) ;; TODO
+        (list arg1 arg2)))
 
 (define (proc-type->type tctx type)
   (case (type-name type)

@@ -315,6 +315,29 @@
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 ;;
+;; Label objects:
+;; -------------
+
+(define (make-lbl-obj lbl new-lbl)
+  (let ((lbl-obj
+         (vector
+          lbl-obj-tag
+          lbl
+          new-lbl)))
+    lbl-obj))
+
+(define lbl-obj-tag (list 'lbl-obj))
+
+(define (lbl-obj? x)
+  (and (vector? x)
+       (> (vector-length x) 0)
+       (eq? (vector-ref x 0) lbl-obj-tag)))
+
+(define (lbl-obj-lbl obj)     (vector-ref obj 1))
+(define (lbl-obj-new-lbl obj) (vector-ref obj 2))
+
+;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;;
 ;; Basic block set manipulation:
 ;; ----------------------------
 
@@ -2190,6 +2213,18 @@
           lbl
           (replacement-lbl-num x))))
 
+  (define (type-singleton->opnd type)
+    (let ((val (type-singleton-val type)))
+      (if (lbl-obj? val)
+          (make-lbl (lbl-obj-lbl val))
+          (make-obj val))))
+
+  (define (type-singleton->new-opnd type)
+    (let ((val (type-singleton-val type)))
+      (if (lbl-obj? val)
+          (make-lbl (lbl-obj-new-lbl val))
+          (make-obj val))))
+
   (define (generic-frame-types frame)
     (let ((nb-regs (length (frame-regs frame)))
           (nb-slots (length (frame-slots frame)))
@@ -2648,25 +2683,27 @@
 
         (define (walk-instr gvm-instr types-before)
 
-          (define (opnd-type gvm-opnd types)
-            (cond ((not gvm-opnd)
+          (define (opnd-type opnd new-opnd types)
+            (cond ((not new-opnd)
                    type-bot)
-                  ((locenv-loc? gvm-opnd)
+                  ((locenv-loc? new-opnd)
                    (locenv-ref types
-                               (gvm-loc->locenv-index types gvm-opnd)))
-                  ((obj? gvm-opnd)
-                   (make-type-singleton (obj-val gvm-opnd)))
+                               (gvm-loc->locenv-index types new-opnd)))
+                  ((obj? new-opnd)
+                   (make-type-singleton (obj-val new-opnd)))
+                  ((lbl? new-opnd)
+                   (make-type-singleton (make-lbl-obj (lbl-num opnd) (lbl-num new-opnd))))
                   (else
                    ;; global variable
                    (make-type-top-with-new-length-bound))))
 
-          (define (opnd-constantify opnd types-before)
+          (define (opnd-constantify opnd new-opnd types-before)
             (if (locenv-loc? opnd)
-                (let ((type (opnd-type opnd types-before)))
+                (let ((type (opnd-type opnd new-opnd types-before)))
                   (if (type-singleton? type)
-                      (make-obj (type-singleton-val type))
-                      opnd))
-                opnd))
+                      (type-singleton->new-opnd type)
+                      new-opnd))
+                new-opnd))
 
           (let ((types-after
                  (resized-frame-types-remove-dead
@@ -2729,11 +2766,14 @@
                (let* ((prim
                        (apply-prim gvm-instr))
                       (opnds
-                       (map walk-opnd (apply-opnds gvm-instr)))
+                       (apply-opnds gvm-instr))
+                      (new-opnds
+                       (map walk-opnd opnds))
                       (type-opnds
-                       (map (lambda (opnd)
-                              (opnd-type opnd types-before))
-                            opnds))
+                       (map (lambda (opnd new-opnd)
+                              (opnd-type opnd new-opnd types-before))
+                            opnds
+                            new-opnds))
                       (args
                        (map make-call-arg type-opnds))
                       (call
@@ -2769,24 +2809,24 @@
                        (if (and (not (proc-obj-side-effects? prim2))
                                 (type-singleton? dst-type))
                            (make-copy
-                            (make-obj (type-singleton-val dst-type))
+                            (type-singleton->new-opnd dst-type)
                             loc
                             (gvm-instr-frame gvm-instr)
                             (gvm-instr-comment gvm-instr))
-                           (let ((opnds2
+                           (let ((new-opnds2
                                   (map (lambda (arg)
                                          (let ((arg-type (call-arg-val arg)))
                                            (if (type-singleton? arg-type)
-                                               (make-obj (type-singleton-val arg-type))
+                                               (type-singleton->new-opnd arg-type)
                                                (let ((i (pos-in-list arg args)))
                                                  (if i
-                                                     (list-ref opnds i)
+                                                     (list-ref new-opnds i)
                                                      (compiler-internal-error
                                                       "bbs-type-specialize*, can't find operand"))))))
                                        args2)))
                              (make-apply
                               prim2
-                              opnds2
+                              new-opnds2
                               loc
                               (gvm-instr-frame gvm-instr)
                               (gvm-instr-comment gvm-instr))))))
@@ -2796,25 +2836,30 @@
               ((copy)
 ;;               (pprint '****copy)
                (let* ((opnd
-                       (walk-opnd (copy-opnd gvm-instr)))
+                       (copy-opnd gvm-instr))
+                      (new-opnd
+                       (walk-opnd opnd))
                       (loc
                        (walk-loc (copy-loc gvm-instr)))
-                      (types-before (resized-frame-types (gvm-instr-frame gvm-instr) types-before))
+                      (types-before
+                       (resized-frame-types (gvm-instr-frame gvm-instr) types-before))
                       (types-after
                         (resized-frame-types-remove-dead
                           (gvm-instr-frame gvm-instr)
                           (if (locenv-loc? loc)
                               (let ((dst-loc
                                       (gvm-loc->locenv-index types-before loc)))
-                                (if (locenv-loc? opnd)
+                                (if (locenv-loc? new-opnd)
                                     (let ((src-loc
-                                            (gvm-loc->locenv-index types-before opnd)))
+                                            (gvm-loc->locenv-index types-before new-opnd)))
                                       (locenv-copy types-before dst-loc src-loc))
-                                    (locenv-set types-before dst-loc (opnd-type opnd types-before))))
+                                    (locenv-set types-before
+                                                dst-loc
+                                                (opnd-type opnd new-opnd types-before))))
                               types-before))) ;; no change
                       (new-instr
                        (make-copy
-                        (opnd-constantify opnd types-before)
+                        (opnd-constantify opnd new-opnd types-before)
                         loc
                         (gvm-instr-frame gvm-instr)
                         (gvm-instr-comment gvm-instr))))
@@ -2854,26 +2899,32 @@
                                     (entry-label
                                      (bb-label-instr entry-bb))
                                     (opnds
-                                     (map walk-opnd
-                                          (closure-parms-opnds parms)))
+                                     (closure-parms-opnds parms))
+                                    (new-opnds
+                                     (map walk-opnd opnds))
                                     (types-entry
                                      (let loop ((opnds opnds)
+                                                (new-opnds new-opnds)
                                                 (i 1)
                                                 (types-entry
                                                  (generic-frame-types
                                                   (gvm-instr-frame entry-label))))
-                                       (if (pair? opnds)
+                                       (if (pair? new-opnds)
                                            (loop
                                             (cdr opnds)
+                                            (cdr new-opnds)
                                             (+ i 1)
                                             (let* ((opnd
                                                     (car opnds))
+                                                   (new-opnd
+                                                    (car new-opnds))
                                                    (dst-loc
                                                     (gvm-loc->locenv-index
                                                      types-entry
                                                      (make-clo #f i)))
                                                    (type
                                                     (opnd-type opnd
+                                                               new-opnd
                                                                types-after)))
                                               (locenv-set types-entry
                                                           dst-loc
@@ -2882,7 +2933,7 @@
                                (make-closure-parms
                                 (closure-parms-loc parms)
                                 (reach* lbl types-entry 0 '())
-                                opnds))
+                                new-opnds))
                              rev-parms))
                            (let ((new-instr
                                   (make-close
@@ -2900,16 +2951,19 @@
                (let* ((test
                        (ifjump-test gvm-instr))
                       (opnds
-                       (map walk-opnd (ifjump-opnds gvm-instr)))
+                       (ifjump-opnds gvm-instr))
+                      (new-opnds
+                       (map walk-opnd opnds))
                       (type-narrow
                        (proc-obj-type-narrow test))
                       (result-types
                        (and type-narrow
                             (type-narrow
                              tctx
-                             (map (lambda (opnd)
-                                    (opnd-type opnd types-before))
-                                  opnds))))
+                             (map (lambda (opnd new-opnd)
+                                    (opnd-type opnd new-opnd types-before))
+                                  opnds
+                                  new-opnds))))
                       (new-instr
                        (if (pair? result-types)
 
@@ -2917,7 +2971,7 @@
 
                              (define (narrow opnd-types)
                                (and opnd-types
-                                    (locenv-update types-after opnds opnd-types)))
+                                    (locenv-update types-after new-opnds opnd-types)))
 
                              (let* ((true-types
                                      (narrow (car result-types)))
@@ -2939,7 +2993,7 @@
                                    (if false-lbl
                                        (make-ifjump
                                         test
-                                        opnds
+                                        new-opnds
                                         true-lbl
                                         false-lbl
                                         (ifjump-poll? gvm-instr)
@@ -2965,7 +3019,7 @@
                                        (error "impossible true and false outcomes from test" (proc-obj-name test))))))
                            (make-ifjump
                             test
-                            opnds
+                            new-opnds
                             (reach* (ifjump-true gvm-instr)
                                     types-after
                                     cost
@@ -2989,46 +3043,59 @@
 
               ((jump)
 ;;               (pprint '****jump)
-               (let* ((opnd
-                       (jump-opnd gvm-instr))
-                      (ret
+               (let* ((ret
                        (jump-ret gvm-instr))
+                      (new-ret
+                       (and ret
+                            (let* ((result-loc
+                                    (gvm-loc->locenv-index types-after (make-reg 1)))
+                                   (types-at-ret
+                                    (if (and (jump-safe? gvm-instr)
+                                             (locenv-loc? opnd))
+                                        (locenv-set types-after
+                                                    (gvm-loc->locenv-index types-after opnd)
+                                                    type-procedure)
+                                        types-after))
+                                   (types-return
+                                    (locenv-set types-at-ret
+                                                result-loc
+                                                (make-type-top-with-new-length-bound))))
+                              (reach-ret* ret
+                                          types-return
+                                          (+ (- cost instr-cost) call-cost)
+                                          path)))) ;;;;;;;;;TODO
+                      (types-after
+                       (if new-ret
+                           (locenv-set
+                            types-after
+                            (gvm-loc->locenv-index types-after return-addr-reg)
+                            (make-type-singleton (make-lbl-obj ret new-ret)))
+                           types-after))
+                      (opnd
+                       (jump-opnd gvm-instr))
+                      (new-opnd
+                       (let ((opnd2
+                              (if (locenv-loc? opnd)
+                                  (let ((type (opnd-type opnd opnd types-before)))
+                                    (if (type-singleton? type)
+                                        (type-singleton->opnd type)
+                                        opnd))
+                                  opnd)))
+                         (if (lbl? opnd2)
+                             (make-lbl (reach* (lbl-num opnd2)
+                                               types-after
+                                               cost
+                                               path))
+                             opnd2)))
                       (new-instr
                        (make-jump
-                        (if (lbl? opnd)
-                            (make-lbl (reach* (lbl-num opnd)
-                                              types-after
-                                              cost
-                                              path))
-                            (walk-opnd opnd))
-                        (and ret
-                             (let* ((result-loc
-                                     (gvm-loc->locenv-index types-after (make-reg 1)))
-                                    (types-after*
-                                     (if (and (jump-safe? gvm-instr)
-                                              (locenv-loc? opnd))
-                                         (locenv-set types-after
-                                                     (gvm-loc->locenv-index types-after opnd)
-                                                     type-procedure)
-                                         types-after))
-                                    (types-return
-                                     (locenv-set types-after*
-                                                 result-loc
-                                                 (make-type-top-with-new-length-bound))))
-                               (set! types-after
-                                (locenv-set
-                                  types-after
-                                  (gvm-loc->locenv-index types-after (make-reg 0))
-                                  (make-type-top-with-new-length-bound)))
-                               (reach-ret* ret
-                                       types-return
-                                       (+ (- cost instr-cost) call-cost)
-                                       path))) ;;;;;;;;;TODO
+                        new-opnd
+                        new-ret
                         (jump-nb-args gvm-instr)
                         (jump-poll? gvm-instr)
                         (if (type-motley-included?
                              (type-motley-force tctx
-                                                (opnd-type opnd types-before))
+                                                (opnd-type opnd new-opnd types-before))
                              type-procedure)
                             #f
                             (jump-safe? gvm-instr))
@@ -3047,12 +3114,10 @@
              label-instr
              'cfg-bb-info
              (list
-               (cons 'info
-                 (object->string
-                   (list orig-lbl '-> new-lbl))
-                 ;;(object->string
-                 ;;(list orig-lbl '-> new-lbl 'cost= cost 'path= (map car (cdr path))))
-                   )))
+              (cons 'info
+                    (string-append (format-gvm-lbl orig-lbl)
+                                   "->"
+                                   (format-gvm-lbl new-lbl)))))
             (comment-add!
              label-instr
              'orig-lbl
@@ -4726,8 +4791,8 @@
 
   (define (flatten x rest)
     (cond ((pair? x)
-           (if (eq? (car x) 'span) (begin (pp (cadr x))
-               (flatten (cddr x) rest))
+           (if (eq? (car x) 'span)
+               (flatten (cddr x) rest)
                (flatten (car x) (flatten (cdr x) rest))))
           ((null? x)
            rest)
@@ -5044,16 +5109,22 @@
 
 (define (format-gvm-obj val quote?)
   (let ((str
-         (if (proc-obj? val)
-             (string-append
-              (if (proc-obj-primitive? val)
-                  "#<primitive "
-                  "#<procedure ")
-              (proc-obj-name val)
-              ">")
-             (object->string val))))
+         (cond ((proc-obj? val)
+                (string-append
+                 (if (proc-obj-primitive? val)
+                     "#<primitive "
+                     "#<procedure ")
+                 (proc-obj-name val)
+                 ">"))
+               ((lbl-obj? val)
+                (string-append (format-gvm-lbl (lbl-obj-lbl val))
+                               "->"
+                               (format-gvm-lbl (lbl-obj-new-lbl val))))
+               (else
+                (object->string val)))))
     (if (or (not quote?)
             (proc-obj? val)
+            (lbl-obj? val)
             (number? val)
             (boolean? val)
             (char? val)
