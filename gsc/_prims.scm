@@ -7565,7 +7565,7 @@
 (define type-pair-bit        33554432) ;; (expt 2 25)
 (define type-procedure-bit   67108864) ;; (expt 2 26)
 (define type-box-bit        134217728) ;; (expt 2 27)
-(define type-promise-bit    268435456) ;; (expt 2 28)
+(define type-return-bit     268435456) ;; (expt 2 28)
 (define type-other-bit     -536870912) ;; (- (expt 2 29))
 
 (define all-motley-bits
@@ -7598,7 +7598,7 @@
    type-pair-bit
    type-procedure-bit
    type-box-bit
-   type-promise-bit
+   type-return-bit
    type-other-bit))
 
 (define type-undefined-mutability-bitset
@@ -7610,6 +7610,7 @@
    type-eof-bit
    type-absent-bit
    type-char-bit
+   type-return-bit
    type-other-bit))
 
 (define type-top-bitset -1) ;; sum of all type-XXX-bit
@@ -7877,7 +7878,7 @@
 (define type-pair      (make-type-motley-non-fixnum type-pair-bit))
 (define type-procedure (make-type-motley-non-fixnum type-procedure-bit))
 (define type-box       (make-type-motley-non-fixnum type-box-bit))
-(define type-promise   (make-type-motley-non-fixnum type-promise-bit))
+(define type-return    (make-type-motley-non-fixnum type-return-bit))
 (define type-other     (make-type-motley-non-fixnum type-other-bit))
 
 (define type-boolean ;; union of type-false and type-true
@@ -8045,7 +8046,14 @@
         ((proc-obj? obj)
          type-procedure)
         ((lbl-obj? obj)
-         (make-type-motley-non-fixnum (+ type-procedure-bit type-other-bit)))
+         (make-type-motley-non-fixnum
+          (case (lbl-obj-kind obj)
+            ((entry)
+             type-procedure-bit)
+            ((return)
+             type-return-bit)
+            (else
+             type-other-bit))))
         ((char? obj)
          type-char)
         ((symbol-object? obj)
@@ -8080,8 +8088,6 @@
          type-pair)
         ((box-object? obj)
          type-box)
-;;        ((promise-object? obj)
-;;         type-promise)
         (else
          type-other)))
 
@@ -8137,7 +8143,11 @@
              (if (eqv? 0 (bitwise-and mut-bitset bit))
                  (if (eqv? 0 (bitwise-and not-mut-bitset bit))
                      (neg lst)
-                     (pos (cons "I" lst)))
+                     (if (eqv? 0 (bitwise-and
+                                  (bitwise-not type-undefined-mutability-bitset)
+                                  bit))
+                         (pos lst)
+                         (pos (cons "I" lst))))
                  (if (eqv? 0 (bitwise-and not-mut-bitset bit))
                      (pos (cons "M" lst))
                      (pos lst))))
@@ -8241,16 +8251,19 @@
            (element '("pa")   type-pair-bit)
            (element '("pr")   type-procedure-bit)
            (element '("bx")   type-box-bit)
-           (element '("pm")   type-promise-bit)
+           (element '("rt")   type-return-bit)
            (element '("ot")   type-other-bit)
 
-           (let ((length-range (type-motley-length-range type)))
-             (if (not (or (type-bot-fixnum-range? length-range)
-                          #f #;(type-top-length-range? length-range)))
-                 (let ((save result))
-                   (set! result '())
-                   (format-fixnum-range (type-motley-length-range type))
-                   (set! result (append save '(";") result)))))
+           (if (not (eqv? 0 (bitwise-and
+                             (bitwise-not type-undefined-mutability-bitset)
+                             bitset)))
+               (let ((length-range (type-motley-length-range type)))
+                 (if (not (or (type-bot-fixnum-range? length-range)
+                              #f #;(type-top-length-range? length-range)))
+                     (let ((save result))
+                       (set! result '())
+                       (format-fixnum-range (type-motley-length-range type))
+                       (set! result (append save '(";") result))))))
 
            result))
         (else

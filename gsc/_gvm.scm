@@ -318,12 +318,14 @@
 ;; Label objects:
 ;; -------------
 
-(define (make-lbl-obj lbl new-lbl)
+(define (make-lbl-obj lbl new-lbl kind types)
   (let ((lbl-obj
          (vector
           lbl-obj-tag
           lbl
-          new-lbl)))
+          new-lbl
+          kind
+          types)))
     lbl-obj))
 
 (define lbl-obj-tag (list 'lbl-obj))
@@ -335,12 +337,12 @@
 
 (define (lbl-obj-lbl obj)     (vector-ref obj 1))
 (define (lbl-obj-new-lbl obj) (vector-ref obj 2))
+(define (lbl-obj-kind obj)    (vector-ref obj 3)) ;; TODO: store reference to bbs
+(define (lbl-obj-types obj)   (vector-ref obj 4))
 
 (define (lbl-obj-eqv? lbl-obj1 lbl-obj2)
-  (and (eqv? (lbl-obj-lbl lbl-obj1)
-             (lbl-obj-lbl lbl-obj2))
-       (eqv? (lbl-obj-new-lbl lbl-obj1)
-             (lbl-obj-new-lbl lbl-obj2))))
+  (eqv? (lbl-obj-new-lbl lbl-obj1)
+        (lbl-obj-new-lbl lbl-obj2)))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 ;;
@@ -2231,11 +2233,15 @@
           (make-lbl (lbl-obj-new-lbl val))
           (make-obj val))))
 
-  (define (generic-frame-types frame)
-    (let ((nb-regs (length (frame-regs frame)))
-          (nb-slots (length (frame-slots frame)))
-          (nb-closed (length (frame-closed frame))))
-      (make-locenv nb-regs nb-slots nb-closed #f)))
+  (define (generic-entry-frame-types frame)
+    (let* ((nb-regs (length (frame-regs frame)))
+           (nb-slots (length (frame-slots frame)))
+           (nb-closed (length (frame-closed frame)))
+           (types (make-locenv nb-regs nb-slots nb-closed #f)))
+      (locenv-set
+       types
+       (gvm-loc->locenv-index types return-addr-reg)
+       (make-type-motley-non-fixnum type-return-bit))))
 
   (define (resized-frame-types-remove-dead frame types)
     (let* ((regs (frame-regs frame))
@@ -2309,6 +2315,8 @@
     (define work-queue (queue-empty))
 
     (define update-reachability-required? #f)
+
+    (define orig-lbl-mapping (make-stretchable-vector #f))
 
     (define reachable-table (make-table))
     (define (reachability-set! lbl r)
@@ -2627,6 +2635,8 @@
                                (max 1 (bb-version-limit bb)))
                           (merge)))))
 
+                (stretchable-vector-set! orig-lbl-mapping new-lbl lbl)
+
                 (queue-put!
                   work-queue
                   (lambda ()
@@ -2680,7 +2690,7 @@
                           (label
                            (bb-label-instr bb))
                           (types-bef
-                           (generic-frame-types (gvm-instr-frame label))))
+                           (generic-entry-frame-types (gvm-instr-frame label))))
                      (make-lbl (reach* lbl types-bef cost path)))
                    gvm-opnd)))
 
@@ -2698,7 +2708,15 @@
                   ((obj? new-opnd)
                    (make-type-singleton (obj-val new-opnd)))
                   ((lbl? new-opnd)
-                   (make-type-singleton (make-lbl-obj (lbl-num opnd) (lbl-num new-opnd))))
+                   (let* ((new-lbl
+                           (lbl-num new-opnd))
+                          (lbl
+                           (stretchable-vector-ref orig-lbl-mapping new-lbl)))
+                     (make-type-singleton
+                      (make-lbl-obj lbl
+                                    new-lbl
+                                    (bb-label-kind (lbl-num->bb lbl bbs))
+                                    #f))))
                   (else
                    ;; global variable
                    (make-type-top-with-new-length-bound))))
@@ -2913,7 +2931,7 @@
                                                 (new-opnds new-opnds)
                                                 (i 1)
                                                 (types-entry
-                                                 (generic-frame-types
+                                                 (generic-entry-frame-types
                                                   (gvm-instr-frame entry-label))))
                                        (if (pair? new-opnds)
                                            (loop
@@ -3049,9 +3067,11 @@
 
               ((jump)
 ;;               (pprint '****jump)
-               (let* ((ret
+               (let* ((opnd
+                       (jump-opnd gvm-instr))
+                      (ret
                        (jump-ret gvm-instr))
-                      (new-ret
+                      (types-return
                        (and ret
                             (let* ((result-loc
                                     (gvm-loc->locenv-index types-after (make-reg 1)))
@@ -3061,38 +3081,51 @@
                                         (locenv-set types-after
                                                     (gvm-loc->locenv-index types-after opnd)
                                                     type-procedure)
-                                        types-after))
-                                   (types-return
-                                    (locenv-set types-at-ret
-                                                result-loc
-                                                (make-type-top-with-new-length-bound))))
-                              (reach-ret* ret
-                                          types-return
-                                          (+ (- cost instr-cost) call-cost)
-                                          path)))) ;;;;;;;;;TODO
+                                        types-after)))
+                              (locenv-set types-at-ret
+                                          result-loc
+                                          (make-type-top-with-new-length-bound)))))
+                      (new-ret
+                       (and ret
+                            (reach-ret* ret
+                                        types-return
+                                        (+ (- cost instr-cost) call-cost)
+                                        path))) ;;;;;;;;;TODO
                       (types-after
                        (if new-ret
                            (locenv-set
                             types-after
                             (gvm-loc->locenv-index types-after return-addr-reg)
-                            (make-type-singleton (make-lbl-obj ret new-ret)))
+                            (make-type-singleton (make-lbl-obj ret new-ret 'return types-return)))
                            types-after))
-                      (opnd
-                       (jump-opnd gvm-instr))
                       (new-opnd
-                       (let ((opnd2
-                              (if (locenv-loc? opnd)
-                                  (let ((type (opnd-type opnd opnd types-before)))
-                                    (if (type-singleton? type)
-                                        (type-singleton->opnd type)
-                                        opnd))
-                                  opnd)))
-                         (if (lbl? opnd2)
-                             (make-lbl (reach* (lbl-num opnd2)
-                                               types-after
-                                               cost
-                                               path))
-                             opnd2)))
+                       (if (locenv-loc? opnd)
+                           (let ((type (opnd-type opnd opnd types-before)))
+                             (if (type-singleton? type)
+                                 (let ((val (type-singleton-val type)))
+                                   (if (lbl-obj? val)
+                                       (let* ((lbl (lbl-obj-lbl val))
+                                              (types (lbl-obj-types val))
+                                              (merged-types
+                                               (if types
+                                                   (locenv-merge types
+                                                                 types-after
+                                                                 0
+                                                                 (lambda (type1 type2)
+                                                                   type2))
+                                                   types-after)))
+                                         (make-lbl (reach* lbl
+                                                           merged-types
+                                                           cost
+                                                           path)))
+                                       (make-obj val)))
+                                 opnd))
+                           (if (lbl? opnd)
+                               (make-lbl (reach* (lbl-num opnd)
+                                                 types-after
+                                                 cost
+                                                 path))
+                               opnd)))
                       (new-instr
                        (make-jump
                         new-opnd
@@ -3150,7 +3183,7 @@
              (entry-label
               (bb-label-instr entry-bb))
              (types-before
-              (generic-frame-types (gvm-instr-frame entry-label))))
+              (generic-entry-frame-types (gvm-instr-frame entry-label))))
 
         (queue-put!
           work-queue
