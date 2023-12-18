@@ -580,19 +580,22 @@
 (define (make-comment)
   (cons 'comment '()))
 
-(define (comment-put! comment name val)
-  (set-cdr! comment (cons (cons name val) (cdr comment))))
-
-(define (comment-add! gvm-instr name val)
-  (gvm-instr-comment-set!
-   gvm-instr
-   (cons 'comment
-         (cons (cons name val) (cdr (gvm-instr-comment gvm-instr))))))
+(define (comment-put! comment name value)
+  (set-cdr! comment (cons (cons name value) (cdr comment))))
 
 (define (comment-get comment name)
   (and comment
        (let ((x (assq name (cdr comment))))
          (if x (cdr x) #f))))
+
+(define (instr-comment-add! gvm-instr name val)
+  (gvm-instr-comment-set!
+   gvm-instr
+   (cons 'comment
+         (cons (cons name val) (cdr (gvm-instr-comment gvm-instr))))))
+
+(define (instr-comment-get gvm-instr name)
+  (comment-get (gvm-instr-comment gvm-instr) name))
 
 ;; Cloning of basic blocks.
 
@@ -1542,7 +1545,7 @@
                         (closure-parms-opnds p2))))
 
       (define (has-debug-info? instr)
-        (let ((node (comment-get (gvm-instr-comment instr) 'node)))
+        (let ((node (instr-comment-get instr 'node)))
           (and node
                (let ((env (node-env node)))
                  (and (debug? env)
@@ -2117,13 +2120,13 @@
   (bbs-for-each-bb
    (lambda (bb)
      (let ((label (bb-label-instr bb)))
-       (comment-add! label 'doms all-lbls)))
+       (instr-comment-add! label 'doms all-lbls)))
    bbs)
 
   (let* ((entry-lbl (bbs-entry-lbl-num bbs))
          (bb (lbl-num->bb entry-lbl bbs))
          (label (bb-label-instr bb)))
-    (comment-add! label 'doms (list entry-lbl)))
+    (instr-comment-add! label 'doms (list entry-lbl)))
 
   (let loop ()
     (define changed? #f)
@@ -2135,20 +2138,18 @@
                   (precedents
                    (bb-precedents bb))
                   (old
-                   (comment-get (gvm-instr-comment label)
+                   (instr-comment-get (gvm-instr-comment label)
                                 'doms))
                   (new
                    (intersect-multi (bb-lbl-num bb)
                                     (map (lambda (p)
-                                           (comment-get
-                                            (gvm-instr-comment
-                                             (bb-label-instr
-                                              (lbl-num->bb p bbs)))
+                                           (instr-comment-get
+                                            (bb-label-instr (lbl-num->bb p bbs))
                                             'doms))
                                          precedents))))
              (if (not (equal? old new))
                  (begin
-                   (comment-add! label 'doms new)
+                   (instr-comment-add! label 'doms new)
                    (set! changed? #t))))))
      bbs)
     (if changed? (loop)))
@@ -2159,11 +2160,9 @@
             (doms
              (map (lambda (lbl)
                     (string-append " " (format-gvm-lbl lbl)))
-                  (comment-get
-                   (gvm-instr-comment label)
-                   'doms))))
+                  (instr-comment-get label 'doms))))
        (if (pair? doms)
-           (comment-add!
+           (instr-comment-add!
             label
             'cfg-bb-info
             (list (cons 'info (string-concatenate doms)))))))
@@ -2198,8 +2197,7 @@
       bbs)) ;; leave bbs intact
 
 (define (bb-version-limit bb)
-  (let* ((instr-comment (gvm-instr-comment (bb-label-instr bb)))
-         (node (comment-get instr-comment 'node))
+  (let* ((node (instr-comment-get (bb-label-instr bb) 'node))
          (env (node-env node)))
     (if env (version-limit env) 0)))
 
@@ -2314,9 +2312,15 @@
 
     (define work-queue (queue-empty))
 
-    (define update-reachability-required? #f)
+    (define orig-lbl-mapping (make-table))
+    (define (orig-lbl-mapping-set! lbl orig-lbl) (table-set! orig-lbl-mapping lbl orig-lbl))
+    (define (orig-lbl-mapping-ref lbl) (table-ref orig-lbl-mapping lbl))
+    (define (new-lbl! orig-lbl)
+      (let ((new-lbl (bbs-new-lbl! new-bbs)))
+        (orig-lbl-mapping-set! new-lbl orig-lbl)
+        new-lbl))
 
-    (define orig-lbl-mapping (make-stretchable-vector #f))
+    (define update-reachability-required? #f)
 
     (define reachable-table (make-table))
     (define (reachability-set! lbl r)
@@ -2549,7 +2553,7 @@
           (if existing-version-is-live?
               existing-version
               (let* ((bb (lbl-num->bb lbl bbs))
-                     (new-lbl (or existing-version (bbs-new-lbl! new-bbs)))
+                     (new-lbl (or existing-version (new-lbl! lbl)))
                      (step-num (begin (set! step-count (+ 1 step-count)) step-count))
                      (looping? (assoc lbl path))
                      (new-types-lbl-alist
@@ -2582,7 +2586,7 @@
                              #t))
                            (new-lbl2
                             (or (replacement-lbl-num (table-ref all-versions-tbl merged-types #f))
-                                (bbs-new-lbl! new-bbs))))
+                                (new-lbl! lbl))))
 
                       (set! debug-merged-types merged-types)
 
@@ -2634,8 +2638,6 @@
                         (if (> (length (vector-ref (table-ref versions lbl) 0))
                                (max 1 (bb-version-limit bb)))
                           (merge)))))
-
-                (stretchable-vector-set! orig-lbl-mapping new-lbl lbl)
 
                 (queue-put!
                   work-queue
@@ -2708,15 +2710,13 @@
                   ((obj? new-opnd)
                    (make-type-singleton (obj-val new-opnd)))
                   ((lbl? new-opnd)
-                   (let* ((new-lbl
-                           (lbl-num new-opnd))
-                          (lbl
-                           (stretchable-vector-ref orig-lbl-mapping new-lbl)))
-                     (make-type-singleton
-                      (make-lbl-obj lbl
-                                    new-lbl
-                                    (bb-label-kind (lbl-num->bb lbl bbs))
-                                    #f))))
+                   (let* ((new-lbl (lbl-num new-opnd))
+                          (orig-lbl (orig-lbl-mapping-ref new-lbl)))
+                     (make-type-singleton (make-lbl-obj
+                                            orig-lbl
+                                            new-lbl
+                                            (bb-label-kind (lbl-num->bb orig-lbl bbs))
+                                            #f))))
                   (else
                    ;; global variable
                    (make-type-top-with-new-length-bound))))
@@ -2783,6 +2783,7 @@
                          (compiler-internal-error
                           "walk-instr, unknown 'gvm-instr':" gvm-instr)))))
                  (gvm-instr-types-set! new-instr types-after)
+                 (instr-comment-add! new-instr 'orig-lbl orig-lbl)
                  new-instr))
 
               ((apply)
@@ -2803,8 +2804,7 @@
                       (call
                        (make-call prim args))
                       (spec-call
-                       (let* ((instr-comment (gvm-instr-comment gvm-instr))
-                              (node (comment-get instr-comment 'node))
+                       (let* ((node (instr-comment-get gvm-instr 'node))
                               (env (node-env node)))
                          (if env
                              (specialize-call call env)
@@ -3149,18 +3149,14 @@
             (set! new-bb (make-bb new-label-instr new-bbs)))
 
           (let ((label-instr (bb-label-instr new-bb)))
-            (comment-add!
+            (instr-comment-add!
              label-instr
              'cfg-bb-info
              (list
               (cons 'info
                     (string-append (format-gvm-lbl orig-lbl)
                                    "->"
-                                   (format-gvm-lbl new-lbl)))))
-            (comment-add!
-             label-instr
-             'orig-lbl
-             orig-lbl))
+                                   (format-gvm-lbl new-lbl))))))
 
           (let loop ((instrs
                       (bb-non-branch-instrs bb))
@@ -3247,15 +3243,13 @@
         (lbl (bb-lbl-num bb)))
 
     (and (= 34 lbl)
-         (let* ((instr-comment (gvm-instr-comment label))
-                (node (comment-get instr-comment 'node))
+         (let* ((node (instr-comment-get label 'node))
                 (expr (and node (parse-tree->expression node))))
            (and expr
                 (object->string expr 75))))
 
     #;
-    (let* ((instr-comment (gvm-instr-comment label))
-           (node (comment-get instr-comment 'node))
+    (let* ((node (instr-comment-get label 'node))
            (expr (and node (parse-tree->expression node))))
       (and (pair? expr)
            (eq? 'lambda (car expr))
@@ -3868,7 +3862,7 @@
             (if (pair? l)
                 (let* ((code (car l))
                        (instr (code-gvm-instr code))
-                       (node (comment-get (gvm-instr-comment instr) 'node))
+                       (node (instr-comment-get instr 'node))
                        (src (node-source node))
                        (loc (and src (source-locat src)))
                        (filename
@@ -3967,8 +3961,7 @@
         (define table (make-table))
 
         (define (add-to-table bb)
-          (let* ((instr-comment (gvm-instr-comment (bb-label-instr bb)))
-                 (orig-lbl (comment-get instr-comment 'orig-lbl))
+          (let* ((orig-lbl (instr-comment-get (bb-label-instr bb) 'orig-lbl))
                  (versions (table-ref table orig-lbl '())))
             (table-set! table orig-lbl (cons bb versions))))
         (bbs-for-each-bb add-to-table bbs)
@@ -3977,8 +3970,7 @@
       (define versions-table (make-versions-table))
 
       (define (bb-has-cousin-versions? bb)
-        (let* ((instr-comment (gvm-instr-comment (bb-label-instr bb)))
-               (orig-lbl (comment-get instr-comment 'orig-lbl)))
+        (let* ((orig-lbl (instr-comment-get (bb-label-instr bb) 'orig-lbl)))
           (> (length (table-ref versions-table orig-lbl)) 1)))
 
       (define (dump-bb bb)
@@ -4184,8 +4176,7 @@
                           (bb-lbl-num bb))
                        (list (cons 'entry (format-gvm-obj proc #f)))
                        '())
-                   (or (comment-get (gvm-instr-comment (bb-label-instr bb))
-                                    'cfg-bb-info)
+                   (or (instr-comment-get (bb-label-instr bb) 'cfg-bb-info)
                        '()))))
             (dot-digraph-add-node!
              dd
@@ -4206,12 +4197,11 @@
                                             ((type)
                                              node-type-bgcolor)
                                             ((info)
-                                              (let ((instr-comment (gvm-instr-comment (bb-label-instr bb))))
-                                                 (get-unique-node-info-bgcolor
-                                                   (comment-get
-                                                     instr-comment
-                                                     'orig-lbl)
-                                                   (not (bb-has-cousin-versions? bb)))))
+                                              (get-unique-node-info-bgcolor
+                                                (instr-comment-get
+                                                  (bb-label-instr bb)
+                                                  'orig-lbl)
+                                                (not (bb-has-cousin-versions? bb))))
                                             (else
                                              #f)))
                                          (esc-line
@@ -4608,13 +4598,12 @@
     (if show-frame?
         (write-gvm-instr-frame gvm-instr port)))
 
-  (let ((x (gvm-instr-comment gvm-instr)))
-    (if x
-      (let ((y (comment-get x 'text)))
-        (if y
-          (begin
-            (display " ; " port)
-            (display y port)))))))
+
+  (let ((y (instr-comment-get gvm-instr 'text)))
+    (if y
+      (begin
+        (display " ; " port)
+        (display y port)))))
 
 (define (write-gvm-instr-frame gvm-instr port)
   (display (format-concatenate (format-gvm-instr-frame gvm-instr))
@@ -5414,7 +5403,7 @@
 ;; Branch counters
 
 (define (mark-exit-jump state)
-  (comment-add! (InterpreterState-current-instruction state) 'exit-jump #t))
+  (instr-comment-add! (InterpreterState-current-instruction state) 'exit-jump #t))
 
 (define (increment-branch-counter branch-instr target-bbs target-bb)
   (let* ((table1
@@ -5430,9 +5419,9 @@
      (+ 1 (table-ref table2 (bb-lbl-num target-bb) 0)))))
 
 (define (get-branch-counters branch-instr)
-  (or (comment-get (gvm-instr-comment branch-instr) 'branch-counter)
+  (or (instr-comment-get branch-instr 'branch-counter)
       (let ((t (make-table 'test: eq?)))
-        (comment-add! branch-instr 'branch-counter t)
+        (instr-comment-add! branch-instr 'branch-counter t)
         t)))
 
 ;; HELPERS
