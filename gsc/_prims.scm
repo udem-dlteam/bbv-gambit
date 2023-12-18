@@ -7632,7 +7632,9 @@
     (set! type-top-counter (+ i 1))
     (make-type-motley type-top-bitset
                       type-top-bitset
-                      (make-type-fixnum-range length-bound length-bound)
+                      (if (> type-top-counter 1000) ;; TODO use a different count by BB
+                          type-top-length-range
+                          (make-type-fixnum-range length-bound length-bound))
                       type-top-fixnum-range))) ;; all types + entire fixnum range
 
 (define (type-top? type)

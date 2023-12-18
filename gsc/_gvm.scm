@@ -2531,11 +2531,11 @@
                                 (let ((bb-versions
                                        (if track-version-history?
                                            (vector '()
-                                                   (make-table)
+                                                   (make-table test: locenv-eqv?)
                                                    (make-text-grid)
                                                    (make-table))
                                            (vector '()
-                                                   (make-table)))))
+                                                   (make-table test: locenv-eqv?)))))
                                   (table-set! versions lbl bb-versions)
                                   bb-versions)))
                (types-lbl-alist (vector-ref bb-versions 0))
@@ -3104,7 +3104,7 @@
                              (if (type-singleton? type)
                                  (let ((val (type-singleton-val type)))
                                    (if (lbl-obj? val)
-                                       (let* ((lbl (lbl-obj-lbl val))
+                                       (let* ((lbl (lbl-obj-lbl val)debug-bbv)
                                               (types (lbl-obj-types val))
                                               (merged-types
                                                (if types
@@ -3444,6 +3444,15 @@
 
 (define (locenv-val-eqv? locenv val1 val2)
   (type-eqv? val1 val2))
+
+(define (locenv-eqv? locenv1 locenv2)
+  (if (and (= (vector-length locenv1) (vector-length locenv2))
+           (equal? (vector-ref locenv1 0) (vector-ref locenv2 0))) ;; compare register/stack size
+      (let loop ((i 2))
+        (if (< i (vector-length locenv1))
+            (and (type-eqv? (vector-ref locenv1 i) (vector-ref locenv2 i))
+                 (loop (+ i 2)))
+            #t))))
 
 (define (make-locenv nb-regs nb-slots nb-closed init-type)
   (let* ((locenv
