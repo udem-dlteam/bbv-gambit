@@ -5552,7 +5552,7 @@
       (cons type-f64vector-bit f64vector?)
       (cons type-pair-bit      pair?)
       (cons type-box-bit       box?)
-      (cons type-promise-bit   promise?)))
+      (cons type-return-bit    has-type-return?)))
 
     ;; Gather length relations between objects in rte
     (define (generic-length obj)
@@ -5596,7 +5596,7 @@
           (and (allowed-mutable? bit) (mutable? value))
           (and (allowed-non-mutable? bit) (not (mutable? value)))))
 
-      (define (mutable? x) (and (##mem-allocated? x) (##mutable? x)))
+      (define (mutable? x) (and (not (has-type-return? x)) (##mem-allocated? x) (##mutable? x)))
 
       (let loop ((bit-checker-pair bits-to-checker))
         (if (null? bit-checker-pair)
@@ -5690,7 +5690,8 @@
   ;; traces
   primitive-counter)
 
-(define exit-return-address (gensym 'exit-return-address))
+(define-type SpecialReturnAddress)
+(define exit-return-address (make-SpecialReturnAddress))
 
 (define empty-stack-slot (gensym 'empty-stack-slot))
 (define interpreter-debug-trace? #f)
@@ -6289,6 +6290,9 @@
   cont)
 
 (define (HostContinuation-call hc) ((HostContinuation-cont hc)))
+
+(define (has-type-return? value)
+  (or (Label? value) (HostContinuation? value) (eq? value exit-return-address)))
 
 (define (make-Label bbs ret)
   (if (HostContinuation? ret)
