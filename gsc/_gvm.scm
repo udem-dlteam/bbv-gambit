@@ -2717,7 +2717,7 @@
                      (make-type-from-lbl-obj lbl-obj)))
                   (else
                    ;; global variable
-                   (make-type-top-with-new-length-bound))))
+                   (make-type-top-with-new-length-bound bb))))
 
           (define (opnd-constantify opnd new-opnd types-before)
             (if (locenv-loc? opnd)
@@ -2818,7 +2818,7 @@
                       (dst-type
                        (if type-infer
                            (type-infer tctx type-opnds)
-                           (make-type-top-with-new-length-bound)))
+                           (make-type-top-with-new-length-bound bb)))
                       (types-after
                        (if (locenv-loc? loc)
                            (let ((dst-loc
@@ -3082,7 +3082,7 @@
                                         types-after)))
                               (locenv-set types-at-ret
                                           result-loc
-                                          (make-type-top-with-new-length-bound)))))
+                                          (make-type-top-with-new-length-bound bb)))))
                       (new-ret
                        (and ret
                             (reach-ret* ret

@@ -7623,20 +7623,36 @@
                     type-bot-fixnum-range))
 
 ;;; top type (corresponds to the union of all values)
-
 (define type-top-counter 0) ;; TODO: put counter in compilation context
+(define (new-unique-type-top-counter!)
+  (let ((x type-top-counter))
+    (set! type-top-counter (+ x 1))
+    x))
+(define type-top-counter-table (make-table test: eq? weak-keys: #t))
 
-(define (make-type-top-with-new-length-bound)
-  (make-type-motley type-top-bitset
-                    type-top-bitset
-                    (if (and use-length-bound?
-                             (< type-top-counter 1000)) ;; TODO use a different count by BB
-                        (let* ((i type-top-counter)
-                               (length-bound (make-length-bound i 0)))
-                          (set! type-top-counter (+ i 1))
-                          (make-type-fixnum-range length-bound length-bound))
-                        type-top-length-range)
-                    type-top-fixnum-range)) ;; all types + entire fixnum range
+(define (new-unique-type-top-counter-for-token! token limit)
+  (let ((count (table-ref type-top-counter-table token 0)))
+    (if (< count limit)
+        (begin
+          (table-set! type-top-counter-table token (+ count 1))
+          (new-unique-type-top-counter!))
+        #f)))
+
+(define (make-type-top-with-new-length-bound #!optional (token #f) (limit #f))
+  (define default-limit 100)
+  (define default-global-limit 1000)
+  (let ((limit (cond (limit limit) ;; use limit if provided
+                     (token default-limit) ;; use default limit if loc is provided
+                     (else default-global-limit))));; else use the global limit shared between all other sites
+    (make-type-motley type-top-bitset
+                      type-top-bitset
+                      (if use-length-bound?
+                        (let ((id (new-unique-type-top-counter-for-token! token limit)))
+                          (if id
+                            (let ((length-bound (make-length-bound id 0)))
+                              (make-type-fixnum-range length-bound length-bound))
+                            type-top-length-range)))
+                      type-top-fixnum-range)))
 
 (define (type-top? type)
   (and (type-motley? type)
