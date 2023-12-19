@@ -2711,12 +2711,10 @@
                    (make-type-singleton (obj-val new-opnd)))
                   ((lbl? new-opnd)
                    (let* ((new-lbl (lbl-num new-opnd))
-                          (orig-lbl (orig-lbl-mapping-ref new-lbl)))
-                     (make-type-singleton (make-lbl-obj
-                                            orig-lbl
-                                            new-lbl
-                                            (bb-label-kind (lbl-num->bb orig-lbl bbs))
-                                            #f))))
+                          (orig-lbl (orig-lbl-mapping-ref new-lbl))
+                          (kind (bb-label-kind (lbl-num->bb orig-lbl bbs)))
+                          (lbl-obj (make-lbl-obj orig-lbl new-lbl kind #f)))
+                     (make-type-from-lbl-obj lbl-obj)))
                   (else
                    ;; global variable
                    (make-type-top-with-new-length-bound))))
@@ -3096,7 +3094,8 @@
                            (locenv-set
                             types-after
                             (gvm-loc->locenv-index types-after return-addr-reg)
-                            (make-type-singleton (make-lbl-obj ret new-ret 'return types-return)))
+                            (make-type-from-lbl-obj
+                             (make-lbl-obj ret new-ret 'return types-return)))
                            types-after))
                       (new-opnd
                        (if (locenv-loc? opnd)

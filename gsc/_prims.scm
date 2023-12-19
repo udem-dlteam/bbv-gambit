@@ -7627,15 +7627,16 @@
 (define type-top-counter 0) ;; TODO: put counter in compilation context
 
 (define (make-type-top-with-new-length-bound)
-  (let* ((i type-top-counter)
-         (length-bound (make-length-bound i 0)))
-    (set! type-top-counter (+ i 1))
-    (make-type-motley type-top-bitset
-                      type-top-bitset
-                      (if (> type-top-counter 1000) ;; TODO use a different count by BB
-                          type-top-length-range
+  (make-type-motley type-top-bitset
+                    type-top-bitset
+                    (if (and use-length-bound?
+                             (< type-top-counter 1000)) ;; TODO use a different count by BB
+                        (let* ((i type-top-counter)
+                               (length-bound (make-length-bound i 0)))
+                          (set! type-top-counter (+ i 1))
                           (make-type-fixnum-range length-bound length-bound))
-                      type-top-fixnum-range))) ;; all types + entire fixnum range
+                        type-top-length-range)
+                    type-top-fixnum-range)) ;; all types + entire fixnum range
 
 (define (type-top? type)
   (and (type-motley? type)
@@ -8032,6 +8033,21 @@
         (else
          #f))) ;; obj does not have its own type
 
+(define (make-type-from-lbl-obj lbl-obj)
+  (if use-lbl-obj?
+      (make-type-singleton lbl-obj)
+      (make-type-motley-from-lbl-obj lbl-obj)))
+
+(define (make-type-motley-from-lbl-obj lbl-obj)
+  (make-type-motley-non-fixnum
+   (case (lbl-obj-kind lbl-obj)
+     ((entry)
+      type-procedure-bit)
+     ((return)
+      type-return-bit)
+     (else
+      type-other-bit))))
+
 (define (make-type-motley-from-obj tctx obj)
   (cond ((make-type-motley-for-unique-obj obj)
          =>
@@ -8048,14 +8064,7 @@
         ((proc-obj? obj)
          type-procedure)
         ((lbl-obj? obj)
-         (make-type-motley-non-fixnum
-          (case (lbl-obj-kind obj)
-            ((entry)
-             type-procedure-bit)
-            ((return)
-             type-return-bit)
-            (else
-             type-other-bit))))
+         (make-type-motley-from-lbl-obj obj))
         ((char? obj)
          type-char)
         ((symbol-object? obj)
@@ -8275,6 +8284,7 @@
 
 (define use-directional-widening? #f)
 (define widening-speed 1) ;; 0..2 (0 is the slowest widening)
+(define use-lbl-obj? #f)
 
 (define (type-motley-union tctx type1 type2 widen?)
 
