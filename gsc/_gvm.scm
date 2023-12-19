@@ -3104,7 +3104,7 @@
                              (if (type-singleton? type)
                                  (let ((val (type-singleton-val type)))
                                    (if (lbl-obj? val)
-                                       (let* ((lbl (lbl-obj-lbl val)debug-bbv)
+                                       (let* ((lbl (lbl-obj-lbl val))
                                               (types (lbl-obj-types val))
                                               (merged-types
                                                (if types
