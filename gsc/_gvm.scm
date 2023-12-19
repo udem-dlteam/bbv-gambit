@@ -5519,6 +5519,9 @@
   (define bb (InterpreterState-bb state))
   (define (is-value? x) (lambda (y) (eq? x y)))
 
+  (define (interpret-procedure? x) (or (proc-obj? x) (Closure? x)))
+  (define (interpret-vector? x) (and (vector? x) (not (proc-obj? x))))
+
   (define bits-to-checker
     (list
       (cons type-false-bit     (is-value? #f))
@@ -5535,8 +5538,8 @@
       (cons type-symbol-bit    symbol?)
       (cons type-keyword-bit   keyword?)
       (cons type-string-bit    string?)
-      (cons type-procedure-bit Closure?)
-      (cons type-vector-bit    vector?)
+      (cons type-procedure-bit interpret-procedure?)
+      (cons type-vector-bit    interpret-vector?)
       (cons type-u8vector-bit  u8vector?)
       (cons type-s8vector-bit  s8vector?)
       (cons type-u16vector-bit u16vector?)
@@ -5579,11 +5582,9 @@
               (length-table-set! (length-bound-object lo) maybe-length))))))
 
   (define (typecheck throw-error value expected-type)
-    (define motley-type (type-motley-force tctx expected-type))
-  
     (define (typecheck-generic)
-      (define motley-mutable-bits (type-motley-mut-bitset motley-type))
-      (define motley-non-mutable-bits (type-motley-not-mut-bitset motley-type))
+      (define motley-mutable-bits (type-motley-mut-bitset expected-type))
+      (define motley-non-mutable-bits (type-motley-not-mut-bitset expected-type))
 
       (define (allowed-mutable? bit) (not (zero? (bitwise-and bit motley-mutable-bits))))
       (define (allowed-non-mutable? bit) (not (zero? (bitwise-and bit motley-non-mutable-bits))))
@@ -5605,7 +5606,7 @@
                 (loop (cdr bit-checker-pair)))))))
 
     (define (typecheck-fixnum)
-      (let* ((fixnum-range (type-motley-fixnum-range motley-type))
+      (let* ((fixnum-range (type-motley-fixnum-range expected-type))
              (lo (type-fixnum-range-lo fixnum-range))
              (hi (type-fixnum-range-hi fixnum-range)))
 
@@ -5637,6 +5638,7 @@
         (or (not (fixnum? value)) (and (over-lo? value) (below-hi? value)))))
 
     (when (not (and (typecheck-fixnum) (typecheck-generic)))
+        (step)
         (throw-error)))
 
   (define (throw-error slot-num value expected)
@@ -5646,7 +5648,8 @@
   (instr-for-each-type
     instr
     (lambda (loc expected-type)
-      (let ((value (InterpreterState-ref state loc safe: #f)))
+      (let ((value (InterpreterState-ref state loc safe: #f))
+            (expected-type (type-motley-force tctx expected-type)))
         (if (not (eq? value empty-stack-slot))
           (typecheck
             (lambda () (throw-error loc value expected-type))
