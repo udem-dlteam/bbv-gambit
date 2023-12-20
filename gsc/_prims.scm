@@ -7654,6 +7654,8 @@
                             type-top-length-range)))
                       type-top-fixnum-range)))
 
+(define type-top (make-type-top-with-new-length-bound 'any 0))
+
 (define (type-top? type)
   (and (type-motley? type)
        (eqv? (bitwise-ior (type-motley-mut-bitset type)

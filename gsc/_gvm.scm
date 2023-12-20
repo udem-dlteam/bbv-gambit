@@ -2260,7 +2260,8 @@
       (define (remove-if-not-live! var gvm-loc)
         (if (not (frame-live? var frame))
             (let ((dst-loc (gvm-loc->locenv-index new-types gvm-loc)))
-              (locenv-set! new-types dst-loc type-bot))))
+              ;; once dead, a slot count contain anything for all we care
+              (locenv-set! new-types dst-loc type-top))))
 
       (let loop1 ((i 1) (slots slots))
         (if (pair? slots)
@@ -3831,7 +3832,7 @@
 (set! show-frame-padding? #f)
 
 (define show-frame? #f)
-(set! show-frame? #t)
+(set! show-frame? #f)
 
 (define show-source-location? #f)
 (set! show-source-location? #f)
@@ -5659,6 +5660,7 @@
 (define backend-nb-args-in-registers 3) ;; TODO: get from backend
 (define backend-return-label-location (reg-num 0)) ;; register 0
 (define backend-return-result-location (make-reg 1))
+(define (nb-args-on-stack nb-args) (max 0 (- nb-args backend-nb-args-in-registers)))
 
 (define (gvm-interpret module-procs)
   ;; comment/uncomment to stop execution or not when an error happens in the GVM interpreter
@@ -5694,7 +5696,7 @@
 (define exit-return-address (make-SpecialReturnAddress))
 
 (define empty-stack-slot (gensym 'empty-stack-slot))
-(define interpreter-debug-trace? #f)
+(define interpreter-debug-trace? #t)
 
 (define (InterpreterState-instr-index-increment! state last-instr)
   ;; increment index if instruction is not a jump
@@ -6032,7 +6034,8 @@
            (bb (InterpreterState-bb state))
            (entry-fs (bb-entry-frame-size bb))
            (exit-fs (bb-exit-frame-size bb))
-           (shift-left (+ shift-left (or (bb-entry-nb-params bb) 0)))
+           (nb-params (bb-entry-nb-params bb))
+           (shift-left (+ shift-left (if nb-params (nb-args-on-stack nb-params) 0)))
            (instr (InterpreterState-current-instruction state))
            (nargs (if (eq? (gvm-instr-kind instr) 'jump)
                       (or (jump-nb-args instr) 0)
