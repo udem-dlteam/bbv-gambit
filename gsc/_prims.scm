@@ -7451,6 +7451,9 @@
 (define (length-bound-same-object? x y)
   (length-bound-object-eqv? (length-bound-object x) (length-bound-object y)))
 
+(define (length-bound-increment-bound lb x)
+  (make-length-bound (length-bound-object lb) (+ (length-bound-offset lb x))))
+
 (define (normalize-lo-length-bound x)
   (if (length-bound? x)
       (length-bound-offset x)
@@ -8669,7 +8672,7 @@
         ((eq? lohi '<)  #f)
         ((eq? lohi '<=) #f)
         ((length-bound? lohi)
-         #f)
+         (error "type-fixnum-<=-num should not receive length-bound"))
         (else
          (<= lohi num))))
 
@@ -8685,33 +8688,11 @@
          (>= lohi num))))
 
 (define (type-fixnum-<= lohi1 lohi2)
-  (declare (generic))
-  (cond ((eq? lohi1 '>=)
-         #t)
-        ((eq? lohi1 '>)
-         (not (eq? lohi2 '>=)))
-        ((exact-integer? lohi1)
-         (cond ((eq? lohi2 '>=)        #f)
-               ((eq? lohi2 '>)         #f)
-               ((exact-integer? lohi2) (<= lohi1 lohi2))
-               ((length-bound? lohi2)  (<= lohi1 (length-bound-offset lohi2)))
-               (else                   #t)))
+  (cond ((length-bound? lohi2)
+          (type-fixnum-< lohi1 (length-bound-increment-bound lohi2 -1)))
         ((length-bound? lohi1)
-         (cond ((eq? lohi2 '>=)        #f)
-               ((eq? lohi2 '>)         #f)
-               ((exact-integer? lohi2) (<= (length-bound-offset lohi1) lohi2))
-               ((length-bound? lohi2)  (and (length-bound-same-object? lohi1 lohi2)
-                                            (<= (length-bound-offset lohi1)
-                                                (length-bound-offset lohi2))))
-               ((eq? lohi2 '<)         (<= (length-bound-offset lohi1) -1))
-               (else                   (<= (length-bound-offset lohi1) 0))))
-        ((eq? lohi1 '<)
-         (or (eq? lohi2 '<)
-             (eq? lohi2 '<=)))
-        ((eq? lohi1 '<=)
-         (eq? lohi2 '<=))
-        (else
-         (error "(type-fixnum-<= lohi1 lohi2)"))))
+          (type-fixnum-< (length-bound-increment-bound lohi1 1) lohi2))
+        (else (not (type-fixnum-< lohi2 lohi1)))))
 
 (define (type-fixnum-< lohi1 lohi2)
   (declare (generic))
@@ -8724,15 +8705,20 @@
          (cond ((eq? lohi2 '>=)        #f)
                ((eq? lohi2 '>)         #f)
                ((exact-integer? lohi2) (< lohi1 lohi2))
-               ((length-bound? lohi2)  (< lohi1 (length-bound-offset lohi2)))
+               ((length-bound? lohi2)  (or (< lohi1 (length-bound-offset lohi2))
+                                           'maybe))
                (else                   #t)))
         ((length-bound? lohi1)
          (cond ((eq? lohi2 '>=)        #f)
                ((eq? lohi2 '>)         #f)
-               ((exact-integer? lohi2) (< (length-bound-offset lohi1) lohi2))
-               ((length-bound? lohi2)  (and (length-bound-same-object? lohi1 lohi2)
-                                            (< (length-bound-offset lohi1)
-                                               (length-bound-offset lohi2))))
+               ((exact-integer? lohi2) (if (< (length-bound-offset lohi1) lohi2)
+                                           'maybe
+                                           #f))
+
+               ((length-bound? lohi2)  (or (and (length-bound-same-object? lohi1 lohi2)
+                                                (< (length-bound-offset lohi1)
+                                                   (length-bound-offset lohi2)))
+                                           'maybe))
                ((eq? lohi2 '<)         (< (length-bound-offset lohi1) -1))
                (else                   (< (length-bound-offset lohi1) 0))))
         ((eq? lohi1 '<)
@@ -8743,10 +8729,28 @@
          (error "(type-fixnum-< lohi1 lohi2)"))))
 
 (define (type-fixnum->= lohi1 lohi2)
-  (not (type-fixnum-< lohi1 lohi2)))
+  (type-fixnum-<= lohi2 lohi1))
 
 (define (type-fixnum-> lohi1 lohi2)
-  (not (type-fixnum-<= lohi1 lohi2)))
+  (type-fixnum-< lohi2 lohi1))
+
+(define (type-fixnum-always-< lohi1 lohi2)
+  (eq? (type-fixnum-< lohi1 lohi2) #t))
+(define (type-fixnum-always-> lohi1 lohi2)
+  (eq? (type-fixnum-> lohi1 lohi2) #t))
+(define (type-fixnum-always-<= lohi1 lohi2)
+  (eq? (type-fixnum-<= lohi1 lohi2) #t))
+(define (type-fixnum-always->= lohi1 lohi2)
+  (eq? (type-fixnum->= lohi1 lohi2) #t))
+(define (type-fixnum-never-< lohi1 lohi2)
+  (eq? (type-fixnum-< lohi1 lohi2) #f))
+(define (type-fixnum-never-> lohi1 lohi2)
+  (eq? (type-fixnum-> lohi1 lohi2) #f))
+(define (type-fixnum-never-<= lohi1 lohi2)
+  (eq? (type-fixnum-<= lohi1 lohi2) #f))
+(define (type-fixnum-never->= lohi1 lohi2)
+  (eq? (type-fixnum->= lohi1 lohi2) #f))
+
 
 (define (type-fixnum-inc-lo lo)
   (declare (generic))
@@ -9063,7 +9067,7 @@
 
   (declare (generic))
 
-  (define (<=? x val) (type-fixnum-<=-num x val))
+  (define (<=? x val) (type-fixnum-<= x val))
   (define (>=? x val) (type-fixnum->=-num x val))
   (define (=? x val) (eqv? x val))
 
@@ -9127,7 +9131,7 @@
 
   (declare (generic))
 
-  (define (<=? x val) (type-fixnum-<=-num x val))
+  (define (<=? x y) (type-fixnum-<=-num x y))
   (define (>=? x val) (type-fixnum->=-num x val))
   (define (=? x val) (eqv? x val))
 
@@ -9470,13 +9474,18 @@
              (abstract-neg-neg-fxquotient
                lo1
                (clamp<= hi2 -1))))))
-
-  (fixnum-bound
-    (quadrants-union
-      (make-pos-pos-interval?)
-      (make-pos-neg-interval?)
-      (make-neg-pos-interval?)
-      (make-neg-neg-interval?))))
+  (if (or (length-bound? lo1)
+          (length-bound? hi1)
+          (length-bound? lo2)
+          (length-bound? hi2))
+    type-top-fixnum-range ;; we could do some work to determine the sign
+                          ;; for instance to remove bound checks in binary search
+    (fixnum-bound
+      (quadrants-union
+        (make-pos-pos-interval?)
+        (make-pos-neg-interval?)
+        (make-neg-pos-interval?)
+        (make-neg-neg-interval?)))))
 
 
 (define (type-infer-common-fxremainder tctx lo1 hi1 lo2 hi2)
@@ -10095,8 +10104,8 @@
           (cond
             ((pairwise-equal? lo1 lo2 hi1 hi2) ;; equal singletons
               (cons (list type1 type2) #f)) ;; always equal
-            ((or (type-fixnum-< hi1 lo2)
-                (type-fixnum-< hi2 lo1))
+            ((or (type-fixnum-always-< hi1 lo2)
+                 (type-fixnum-always-< hi2 lo1))
               (cons #f (list type1 type2))) ;; never equal
             (else
               (cons (list type1 type2)
