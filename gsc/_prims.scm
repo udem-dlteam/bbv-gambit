@@ -7451,9 +7451,6 @@
 (define (length-bound-same-object? x y)
   (length-bound-object-eqv? (length-bound-object x) (length-bound-object y)))
 
-(define (length-bound-increment-bound lb x)
-  (make-length-bound (length-bound-object lb) (+ (length-bound-offset lb x))))
-
 (define (normalize-lo-length-bound x)
   (if (length-bound? x)
       (length-bound-offset x)
@@ -8687,12 +8684,11 @@
         (else
          (>= lohi num))))
 
-(define (type-fixnum-<= lohi1 lohi2)
-  (cond ((length-bound? lohi2)
-          (type-fixnum-< lohi1 (length-bound-increment-bound lohi2 -1)))
-        ((length-bound? lohi1)
-          (type-fixnum-< (length-bound-increment-bound lohi1 1) lohi2))
-        (else (not (type-fixnum-< lohi2 lohi1)))))
+(define (maybe-not x)
+  (case x
+    ((#t) #f)
+    ((#f) #t)
+    ((maybe) 'maybe)))
 
 (define (type-fixnum-< lohi1 lohi2)
   (declare (generic))
@@ -8727,6 +8723,9 @@
          #f)
         (else
          (error "(type-fixnum-< lohi1 lohi2)"))))
+
+(define (type-fixnum-<= lohi1 lohi2)
+  (maybe-not (type-fixnum-> lohi1 lohi2)))
 
 (define (type-fixnum->= lohi1 lohi2)
   (type-fixnum-<= lohi2 lohi1))
