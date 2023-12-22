@@ -5661,6 +5661,7 @@
 (define backend-return-label-location (reg-num 0)) ;; register 0
 (define backend-return-result-location (make-reg 1))
 (define (nb-args-on-stack nb-args) (max 0 (- nb-args backend-nb-args-in-registers)))
+(define (nb-args-in-registers nb-args) (- nb-args (nb-args-on-stack nb-args)))
 
 (define (gvm-interpret module-procs)
   ;; comment/uncomment to stop execution or not when an error happens in the GVM interpreter
@@ -5805,6 +5806,15 @@
         (Closure-slots-set! c slots)))
       parms closures)))
 
+(define (InterpreterState-get-args-positions state nargs)
+  (let* ((nargs-stk (nb-args-on-stack nargs))
+         (nargs-reg (nb-args-in-registers nargs))
+         (bb (InterpreterState-bb state))
+         (fs (bb-exit-frame-size bb)))
+    (append
+      (map make-stk (iota nargs-stk (- fs nargs-stk -1)))
+      (map make-reg (iota nargs-reg 1)))))
+
 (define (InterpreterState-execute-jump state instr)
   (let* ((rte (InterpreterState-rte state))
          (opnd (jump-opnd instr))
@@ -5845,13 +5855,11 @@
             ret
             target)))
       ((gvm-proc-obj-primitive? target)
-        (let* ((rte (InterpreterState-rte state))
-               (params-info (get-jump-parameters-info nargs))
-               (opnds (get-args-loc params-info)))
+        (let ((rte (InterpreterState-rte state)))
           (InterpreterState-execute-call-primitive
             state
             (proc-obj-name target)
-            opnds
+            (InterpreterState-get-args-positions state nargs)
             (lambda (result)
               (RTE-set! rte backend-return-result-location result)
               (InterpreterState-transition
