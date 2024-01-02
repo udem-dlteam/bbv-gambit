@@ -5825,6 +5825,7 @@
 
 (define (InterpreterState-transition state target nargs ret #!key exit-fs)
   (let* ((current-bbs (InterpreterState-bbs state))
+         (current-bb (InterpreterState-bb state))
          (exit-fs (or exit-fs (bb-exit-frame-size (InterpreterState-bb state)))))
     (cond
       ((eq? target exit-return-address)
@@ -5855,13 +5856,20 @@
             ret
             target)))
       ((gvm-proc-obj-primitive? target)
-        (let ((rte (InterpreterState-rte state)))
+        (let* ((rte (InterpreterState-rte state))
+               (stack (RTE-stack rte)))
           (InterpreterState-execute-call-primitive
             state
             (proc-obj-name target)
             (InterpreterState-get-args-positions state nargs)
             (lambda (result)
+              ;; adjust frame to remove arguments on stack
+              (Stack-frame-enter! stack (nb-args-on-stack nargs))
+              (Stack-frame-exit! stack 0)
+              (Stack-frame-enter! stack (bb-entry-frame-size current-bb))
+              ;; write return value
               (RTE-set! rte backend-return-result-location result)
+              ;; jump
               (InterpreterState-transition
                 state
                 (if ret
@@ -5873,7 +5881,11 @@
         (let* ((target-bbs (proc-obj-code target))
                (target-entry-lbl (bbs-entry-lbl-num target-bbs)))
           (when interpreter-debug-trace?
-            (println "Entering procedure: " (proc-obj-name target)))
+            (let* ((text (string-append "   Entering procedure: " (proc-obj-name target) "   "))
+                   (text-length (string-length text)))
+            (println (make-string text-length #\=) "\n"
+                     text "\n"
+                     (make-string text-length #\=))))
           (InterpreterState-transition-to-bb
             state
             exit-fs
