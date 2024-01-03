@@ -6045,7 +6045,8 @@
              (name (InterpreterState-get-bbs-name state lbl-bbs)))
         (pp-with-tag
           "label"
-          (or name (bbs-entry-lbl-num lbl-bbs))
+          (or name
+              (string-append "?" (number->string (bbs-entry-lbl-num lbl-bbs))))
           (string-append "#" (number->string (Label-id o))))))
     ((Closure? o)
       (pp-with-tag "closure"))
@@ -6074,8 +6075,10 @@
            (instr (InterpreterState-current-instruction state))
            (nargs (if (eq? (gvm-instr-kind instr) 'jump)
                       (or (jump-nb-args instr) 0)
-                      0)))
-      (println "In basic block #" (bb-lbl-num bb))
+                      0))
+           (bbs (InterpreterState-bbs state))
+           (bbs-name (InterpreterState-get-bbs-name state bbs)))
+      (println "In " (or bbs-name "?") " - basic block #" (bb-lbl-num bb))
       (println "  Registers:")
       (for-each
         (lambda (i)
