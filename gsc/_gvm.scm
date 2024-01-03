@@ -5864,7 +5864,8 @@
         (let* ((clo-lbl (Closure-ref target 0))
                (lbl-bbs (Label-bbs clo-lbl))
                (lbl-id (Label-id clo-lbl)))
-        (debug-log-call "CLOSURE")
+        (debug-log-call (string-append (or (InterpreterState-get-bbs-name state lbl-bbs) "?")
+                                       " (closure)"))
         (InterpreterState-transition-to-bb
             state
             exit-fs
@@ -5909,12 +5910,9 @@
             #f)))
       (else (error "InterpreterState-transition" "NotImplemented") #f))))
 
-(define (InterpreterState-align-args state nargs nparams keys opts rest? clo)
+(define (InterpreterState-align-args state args nparams keys opts rest? clo)
   (define rte (InterpreterState-rte state))
   (define stack (RTE-stack rte))
-
-  (define args (map (lambda (i) (RTE-args-ref rte nargs i)) (iota nargs)))
-
   (define empty (gensym 'empty))
   (define remaining-args (list-copy args))
   (define actual-params (make-vector nparams empty))
@@ -5994,20 +5992,23 @@
          (stack (RTE-stack rte))
          (current-bbs (InterpreterState-bbs state))
          (current-bb (InterpreterState-bb state))
-         (target-label (bb-label-instr target-bb)))
+         (target-label (bb-label-instr target-bb))
+         (target-entry-fs (bb-entry-frame-size target-bb)))
     (increment-branch-counter (InterpreterState-current-instruction state) target-bbs target-bb)
     (Stack-frame-exit! stack exit-fs)
     (if (eq? (label-kind target-label) 'entry)
-        (InterpreterState-align-args
-          state
-          nargs
-          (label-entry-nb-parms target-label)
-          (label-entry-keys target-label)
-          (label-entry-opts target-label)
-          (label-entry-rest? target-label)
-          clo))
+        (let ((args (map (lambda (i) (RTE-args-ref rte nargs i)) (iota nargs))))
+          (Stack-frame-enter! stack target-entry-fs)
+          (InterpreterState-align-args
+            state
+            args
+            (label-entry-nb-parms target-label)
+            (label-entry-keys target-label)
+            (label-entry-opts target-label)
+            (label-entry-rest? target-label)
+            clo))
+        (Stack-frame-enter! stack target-entry-fs))
     (if ret (RTE-set! rte backend-return-label-location (make-Label current-bbs ret)))
-    (Stack-frame-enter! stack (bb-entry-frame-size target-bb))
     (InterpreterState-bbs-set! state target-bbs)
     (InterpreterState-bb-set! state target-bb)
     (InterpreterState-instr-index-set! state 0)))
@@ -6045,11 +6046,13 @@
              (name (InterpreterState-get-bbs-name state lbl-bbs)))
         (pp-with-tag
           "label"
-          (or name
-              (string-append "?" (number->string (bbs-entry-lbl-num lbl-bbs))))
+          (or name "?")
           (string-append "#" (number->string (Label-id o))))))
     ((Closure? o)
-      (pp-with-tag "closure"))
+      (let* ((clo-lbl (Closure-ref o 0))
+             (clo-bbs (Label-bbs clo-lbl))
+             (name (InterpreterState-get-bbs-name state clo-bbs)))
+        (pp-with-tag "closure" (or name "?"))))
     ((eq? o empty-stack-slot)
       (display ".\n"))
     ((symbol? o)
