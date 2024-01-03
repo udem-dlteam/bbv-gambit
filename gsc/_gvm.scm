@@ -5691,7 +5691,8 @@
   instr-index
   done?
   ;; traces
-  primitive-counter)
+  primitive-counter
+  bbs-names)
 
 (define-type SpecialReturnAddress)
 (define exit-return-address (make-SpecialReturnAddress))
@@ -5711,15 +5712,23 @@
          (entry-lbl-num (bbs-entry-lbl-num main-bbs))
          (state
           (make-InterpreterState
-            (init-RTE)                            ;; rte
-            module-procs                          ;; all procedures in program
-            main-bbs                              ;; bbs
-            (lbl-num->bb entry-lbl-num main-bbs)  ;; bb
-            0                                     ;; instr index
-            #f                                    ;; done
-            (make-table))))                       ;; primitive counter
+            (init-RTE)                               ;; rte
+            module-procs                             ;; all procedures in program
+            main-bbs                                 ;; bbs
+            (lbl-num->bb entry-lbl-num main-bbs)     ;; bb
+            0                                        ;; instr index
+            #f                                       ;; done
+            (make-table)                             ;; primitive counter
+            (make-table test: eq? weak-keys: #t))))  ;; bbs-names
+    (for-each (lambda (proc) (InterpreterState-register-bbs-name! state proc)) module-procs)
     (RTE-registers-set! (InterpreterState-rte state) 0 exit-return-address)
     state))
+
+(define (InterpreterState-register-bbs-name! state proc)
+  (table-set! (InterpreterState-bbs-names state) (proc-obj-code proc) (proc-obj-name proc)))
+
+(define (InterpreterState-get-bbs-name state bbs)
+  (table-ref (InterpreterState-bbs-names state) bbs #f))
 
 (define (InterpreterState-primitive-counter-increment state name)
   (let ((table (InterpreterState-primitive-counter state)))
@@ -5824,6 +5833,14 @@
     (InterpreterState-transition state target nargs ret)))
 
 (define (InterpreterState-transition state target nargs ret #!key exit-fs)
+  (define (debug-log-call name)
+    (if interpreter-debug-trace?
+        (let* ((text (string-append "   Entering procedure: " name "   "))
+                (text-length (string-length text)))
+        (println (make-string text-length #\=) "\n"
+                  text "\n"
+                  (make-string text-length #\=)))))
+
   (let* ((current-bbs (InterpreterState-bbs state))
          (current-bb (InterpreterState-bb state))
          (exit-fs (or exit-fs (bb-exit-frame-size (InterpreterState-bb state)))))
@@ -5847,6 +5864,7 @@
         (let* ((clo-lbl (Closure-ref target 0))
                (lbl-bbs (Label-bbs clo-lbl))
                (lbl-id (Label-id clo-lbl)))
+        (debug-log-call "CLOSURE")
         (InterpreterState-transition-to-bb
             state
             exit-fs
@@ -5880,12 +5898,7 @@
       ((proc-obj? target)
         (let* ((target-bbs (proc-obj-code target))
                (target-entry-lbl (bbs-entry-lbl-num target-bbs)))
-          (when interpreter-debug-trace?
-            (let* ((text (string-append "   Entering procedure: " (proc-obj-name target) "   "))
-                   (text-length (string-length text)))
-            (println (make-string text-length #\=) "\n"
-                     text "\n"
-                     (make-string text-length #\=))))
+          (debug-log-call (proc-obj-name target))
           (InterpreterState-transition-to-bb
             state
             exit-fs
@@ -6013,7 +6026,7 @@
                 (InterpreterState-transition state (make-Label (InterpreterState-bbs state) (ifjump-false instr)) 0 #f))))
         (error "ifjump test is not a primitive"))))
 
-(define (pp-gvm-obj o)
+(define (pp-gvm-obj state o)
   (define (pp-with-tag tag . names)
     (display "<<") (display tag)
     (for-each (lambda (n) (display " ") (display n)) names)
@@ -6028,10 +6041,12 @@
     ((proc-obj? o)
       (pp-with-tag "procedure" (proc-obj-name o)))
     ((Label? o)
-      (pp-with-tag
-        "label"
-        (Label-id o)
-        (bbs-entry-lbl-num (Label-bbs o))))
+      (let* ((lbl-bbs (Label-bbs o))
+             (name (InterpreterState-get-bbs-name state lbl-bbs)))
+        (pp-with-tag
+          "label"
+          (or name (bbs-entry-lbl-num lbl-bbs))
+          (string-append "#" (number->string (Label-id o))))))
     ((Closure? o)
       (pp-with-tag "closure"))
     ((eq? o empty-stack-slot)
@@ -6066,13 +6081,13 @@
         (lambda (i)
           (print "    " i)
           (print ": ")
-          (pp-gvm-obj (stretchable-vector-ref registers i)))
+          (pp-gvm-obj state (stretchable-vector-ref registers i)))
         (iota (stretchable-vector-length registers)))
       (println "  Frame:")
       (for-each
         (lambda (i) 
           (print "    " i ": " )
-          (pp-gvm-obj (RTE-frame-ref rte i)))
+          (pp-gvm-obj state (RTE-frame-ref rte i)))
         (iota (max entry-fs (+ nargs shift-left shift-right exit-fs)) (- 1 shift-left)))
       (println "  Instruction:")
       (print "    ")
