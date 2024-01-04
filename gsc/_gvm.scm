@@ -5698,13 +5698,26 @@
 (define exit-return-address (make-SpecialReturnAddress))
 
 (define empty-stack-slot (gensym 'empty-stack-slot))
-(define interpreter-debug-trace? #t)
+(define interpreter-debug-trace? #f)
 
 (define (InterpreterState-instr-index-increment! state last-instr)
   ;; increment index if instruction is not a jump
   ;; jump instruction reset index to 0 instead
   (or (memq (gvm-instr-kind last-instr) '(jump ifjump))
       (InterpreterState-instr-index-set! state (+ (InterpreterState-instr-index state) 1))))
+
+(define gvm-interpreter-debug-proc-obj
+  (make-proc-obj ;; I don't know what these do, but they are not used anyway
+    "##gvm-interpreter-debug"
+    #f
+    #t ;; is a primitive
+    #f
+    #f
+    #t
+    #f
+    #f
+    '()
+    '(#f)))
 
 (define (init-interpreter-state module-procs)
   (let* ((main-proc (car module-procs))
@@ -5719,9 +5732,16 @@
             0                                        ;; instr index
             #f                                       ;; done
             (make-table)                             ;; primitive counter
-            (make-table test: eq? weak-keys: #t))))  ;; bbs-names
+            (make-table test: eq? weak-keys: #t)))   ;; bbs-names
+         (rte (InterpreterState-rte state)))
+    ;; read name of each bbs from global proc objects
     (for-each (lambda (proc) (InterpreterState-register-bbs-name! state proc)) module-procs)
-    (RTE-registers-set! (InterpreterState-rte state) 0 exit-return-address)
+    ;; add sentinel that acts as program exit return address
+    (RTE-registers-set! rte 0 exit-return-address)
+    ;; Add a debug procedure in the global environment
+    (RTE-global-set! rte
+                     '##gvm-interpreter-debug
+                     gvm-interpreter-debug-proc-obj)
     state))
 
 (define (InterpreterState-register-bbs-name! state proc)
@@ -6066,8 +6086,8 @@
                       s))
         (display "\n")))))
 
-(define (InterpreterState-debug-log state #!key (shift-left 0) (shift-right 0))
-  (when interpreter-debug-trace?
+(define (InterpreterState-debug-log state #!key (shift-left 0) (shift-right 0) (force-trace? #f))
+  (when (or interpreter-debug-trace? force-trace?)
     (let* ((rte (InterpreterState-rte state))
            (registers (RTE-registers rte))
            (bb (InterpreterState-bb state))
@@ -6147,6 +6167,15 @@
 (define (make-gvm-primitives)
   (define primitives-table (make-table))
   (define (register! name proc) (table-set! primitives-table name proc))
+
+  (register!
+    "##gvm-interpreter-debug"
+    (lambda (state args cont)
+      (cond
+        ((null? args) (InterpreterState-debug-log state force-trace?: #t))
+        ((car args) (set! interpreter-debug-trace? #t))
+        (else (set! interpreter-debug-trace? #f)))
+      (cont #f)))
 
   (register!
     "##dead-end"
