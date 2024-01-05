@@ -5639,7 +5639,6 @@
         (or (not (fixnum? value)) (and (over-lo? value) (below-hi? value)))))
 
     (when (not (and (typecheck-fixnum) (typecheck-generic)))
-        (step)
         (throw-error)))
 
   (define (throw-error slot-num value expected)
@@ -5693,6 +5692,8 @@
   ;; traces
   debug-state
   debug-tag
+  debug-shift-left
+  debug-shift-right
   primitive-counter
   bbs-names)
 
@@ -5734,6 +5735,8 @@
             #f                                       ;; done?
             #f                                       ;; debug-state
             #f                                       ;; debug-tag
+            0                                        ;; debug-shift-left
+            0                                        ;; debug-shift-right
             (make-table)                             ;; primitive counter
             (make-table test: eq? weak-keys: #t)))   ;; bbs-names
          (rte (InterpreterState-rte state)))
@@ -5920,7 +5923,8 @@
             nargs
             ret
             #f)))
-      (else (error "InterpreterState-transition" "NotImplemented") #f))))
+      (else
+        (error "InterpreterState-transition" "NotImplemented") #f))))
 
 (define (InterpreterState-align-args state args nparams keys opts rest? clo)
   (define rte (InterpreterState-rte state))
@@ -6083,6 +6087,8 @@
 
 (define (InterpreterState-debug-off! state)
   (InterpreterState-debug-tag-set! state #f)
+  (InterpreterState-debug-shift-left-set! state 0)
+  (InterpreterState-debug-shift-right-set! state 0)
   (InterpreterState-debug-state-set! state #f))
 
 (define (InterpreterState-debug-count! state count)
@@ -6102,15 +6108,19 @@
       (debug-state #t)
       (else #f))))
 
-(define (InterpreterState-debug-log state #!key (shift-left 0) (shift-right 0))
+(define (InterpreterState-debug-log state)
   (when (InterpreterState-debug? state)
     (let* ((rte (InterpreterState-rte state))
+           (stack (RTE-stack rte))
            (registers (RTE-registers rte))
            (bb (InterpreterState-bb state))
            (entry-fs (bb-entry-frame-size bb))
            (exit-fs (bb-exit-frame-size bb))
            (nb-params (bb-entry-nb-params bb))
-           (shift-left (+ shift-left (if nb-params (nb-args-on-stack nb-params) 0)))
+           (shift-left (min (Stack-frame-pointer stack)
+                            (+ (InterpreterState-debug-shift-left state)
+                               (if nb-params (nb-args-on-stack nb-params) 0))))
+           (shift-right (InterpreterState-debug-shift-right state))
            (instr (InterpreterState-current-instruction state))
            (nargs (if (eq? (gvm-instr-kind instr) 'jump)
                       (or (jump-nb-args instr) 0)
@@ -6182,8 +6192,13 @@
           (primitive state args cont))))
     (table-copy primitives-table)))
 
-(define (InterpreterState-##gvm-interpreter-debug state #!optional (arg 1) #!key (tag #f))
+(define (InterpreterState-##gvm-interpreter-debug state #!optional (arg 1)
+                                                        #!key (tag #f)
+                                                              (shift-left 0)
+                                                              (shift-right 0))
   (InterpreterState-debug-tag-set! state tag)
+  (InterpreterState-debug-shift-left-set! state shift-left)
+  (InterpreterState-debug-shift-right-set! state shift-right)
   (cond
     ((number? arg) (InterpreterState-debug-count! state arg))
     (arg (InterpreterState-debug-on! state))
