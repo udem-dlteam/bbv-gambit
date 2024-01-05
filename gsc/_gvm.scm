@@ -5691,6 +5691,8 @@
   instr-index
   done?
   ;; traces
+  debug-state
+  debug-tag
   primitive-counter
   bbs-names)
 
@@ -5698,7 +5700,6 @@
 (define exit-return-address (make-SpecialReturnAddress))
 
 (define empty-stack-slot (gensym 'empty-stack-slot))
-(define interpreter-debug-trace? #f)
 
 (define (InterpreterState-instr-index-increment! state last-instr)
   ;; increment index if instruction is not a jump
@@ -5730,7 +5731,9 @@
             main-bbs                                 ;; bbs
             (lbl-num->bb entry-lbl-num main-bbs)     ;; bb
             0                                        ;; instr index
-            #f                                       ;; done
+            #f                                       ;; done?
+            #f                                       ;; debug-state
+            #f                                       ;; debug-tag
             (make-table)                             ;; primitive counter
             (make-table test: eq? weak-keys: #t)))   ;; bbs-names
          (rte (InterpreterState-rte state)))
@@ -5853,14 +5856,6 @@
     (InterpreterState-transition state target nargs ret)))
 
 (define (InterpreterState-transition state target nargs ret #!key exit-fs)
-  (define (debug-log-call name)
-    (if interpreter-debug-trace?
-        (let* ((text (string-append "   Entering procedure: " name "   "))
-                (text-length (string-length text)))
-        (println (make-string text-length #\=) "\n"
-                  text "\n"
-                  (make-string text-length #\=)))))
-
   (let* ((current-bbs (InterpreterState-bbs state))
          (current-bb (InterpreterState-bb state))
          (exit-fs (or exit-fs (bb-exit-frame-size (InterpreterState-bb state)))))
@@ -5884,8 +5879,6 @@
         (let* ((clo-lbl (Closure-ref target 0))
                (lbl-bbs (Label-bbs clo-lbl))
                (lbl-id (Label-id clo-lbl)))
-        (debug-log-call (string-append (or (InterpreterState-get-bbs-name state lbl-bbs) "?")
-                                       " (closure)"))
         (InterpreterState-transition-to-bb
             state
             exit-fs
@@ -5919,7 +5912,6 @@
       ((proc-obj? target)
         (let* ((target-bbs (proc-obj-code target))
                (target-entry-lbl (bbs-entry-lbl-num target-bbs)))
-          (debug-log-call (proc-obj-name target))
           (InterpreterState-transition-to-bb
             state
             exit-fs
@@ -6086,8 +6078,32 @@
                       s))
         (display "\n")))))
 
-(define (InterpreterState-debug-log state #!key (shift-left 0) (shift-right 0) (force-trace? #f))
-  (when (or interpreter-debug-trace? force-trace?)
+(define (InterpreterState-debug-on! state)
+  (InterpreterState-debug-state-set! state #t))
+
+(define (InterpreterState-debug-off! state)
+  (InterpreterState-debug-tag-set! state #f)
+  (InterpreterState-debug-state-set! state #f))
+
+(define (InterpreterState-debug-count! state count)
+  (InterpreterState-debug-state-set! state count))
+
+(define (InterpreterState-debug? state)
+  (let ((debug-state (InterpreterState-debug-state state)))
+    (cond
+      ((number? debug-state)
+        (if (<= debug-state 0)
+            (begin
+              (InterpreterState-debug-off! state)
+              #f)
+            (begin
+              (InterpreterState-debug-state-set! state (- debug-state 1))
+              #t)))
+      (debug-state #t)
+      (else #f))))
+
+(define (InterpreterState-debug-log state #!key (shift-left 0) (shift-right 0))
+  (when (InterpreterState-debug? state)
     (let* ((rte (InterpreterState-rte state))
            (registers (RTE-registers rte))
            (bb (InterpreterState-bb state))
@@ -6100,7 +6116,9 @@
                       (or (jump-nb-args instr) 0)
                       0))
            (bbs (InterpreterState-bbs state))
-           (bbs-name (InterpreterState-get-bbs-name state bbs)))
+           (bbs-name (InterpreterState-get-bbs-name state bbs))
+           (debug-tag (InterpreterState-debug-tag state)))
+      (if debug-tag (println "[Debug tag: " debug-tag "]"))
       (println "In " (or bbs-name "?") " - basic block #" (bb-lbl-num bb))
       (println "  Registers:")
       (for-each
@@ -6164,6 +6182,13 @@
           (primitive state args cont))))
     (table-copy primitives-table)))
 
+(define (InterpreterState-##gvm-interpreter-debug state #!optional (arg 1) #!key (tag #f))
+  (InterpreterState-debug-tag-set! state tag)
+  (cond
+    ((number? arg) (InterpreterState-debug-count! state arg))
+    (arg (InterpreterState-debug-on! state))
+    (else (InterpreterState-debug-off! state))))
+
 (define (make-gvm-primitives)
   (define primitives-table (make-table))
   (define (register! name proc) (table-set! primitives-table name proc))
@@ -6171,10 +6196,7 @@
   (register!
     "##gvm-interpreter-debug"
     (lambda (state args cont)
-      (cond
-        ((null? args) (InterpreterState-debug-log state force-trace?: #t))
-        ((car args) (set! interpreter-debug-trace? #t))
-        (else (set! interpreter-debug-trace? #f)))
+      (apply InterpreterState-##gvm-interpreter-debug state args)
       (cont #f)))
 
   (register!
