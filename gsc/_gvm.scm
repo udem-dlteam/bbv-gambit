@@ -5681,6 +5681,11 @@
       (InterpreterState-step state)
       (loop))))
 
+(define-type SpecialReturnAddress)
+(define exit-return-address (make-SpecialReturnAddress))
+
+(define empty-stack-slot (gensym 'empty-stack-slot))
+
 (define-type InterpreterState
   ;; execution state
   rte
@@ -5694,19 +5699,9 @@
   debug-tag
   debug-shift-left
   debug-shift-right
+  debug-predicate
   primitive-counter
   bbs-names)
-
-(define-type SpecialReturnAddress)
-(define exit-return-address (make-SpecialReturnAddress))
-
-(define empty-stack-slot (gensym 'empty-stack-slot))
-
-(define (InterpreterState-instr-index-increment! state last-instr)
-  ;; increment index if instruction is not a jump
-  ;; jump instruction reset index to 0 instead
-  (or (memq (gvm-instr-kind last-instr) '(jump ifjump))
-      (InterpreterState-instr-index-set! state (+ (InterpreterState-instr-index state) 1))))
 
 (define gvm-interpreter-debug-proc-obj
   (make-proc-obj ;; I don't know what these do, but they are not used anyway
@@ -5737,6 +5732,7 @@
             #f                                       ;; debug-tag
             0                                        ;; debug-shift-left
             0                                        ;; debug-shift-right
+            #f                                       ;; debug-predicate
             (make-table)                             ;; primitive counter
             (make-table test: eq? weak-keys: #t)))   ;; bbs-names
          (rte (InterpreterState-rte state)))
@@ -5749,6 +5745,12 @@
                      '##gvm-interpreter-debug
                      gvm-interpreter-debug-proc-obj)
     state))
+
+(define (InterpreterState-instr-index-increment! state last-instr)
+  ;; increment index if instruction is not a jump
+  ;; jump instruction reset index to 0 instead
+  (or (memq (gvm-instr-kind last-instr) '(jump ifjump))
+      (InterpreterState-instr-index-set! state (+ (InterpreterState-instr-index state) 1))))
 
 (define (InterpreterState-register-bbs-name! state proc)
   (table-set! (InterpreterState-bbs-names state) (proc-obj-code proc) (proc-obj-name proc)))
@@ -6089,24 +6091,24 @@
   (InterpreterState-debug-tag-set! state #f)
   (InterpreterState-debug-shift-left-set! state 0)
   (InterpreterState-debug-shift-right-set! state 0)
+  (InterpreterState-debug-predicate-set! state #f)
   (InterpreterState-debug-state-set! state #f))
 
 (define (InterpreterState-debug-count! state count)
   (InterpreterState-debug-state-set! state count))
 
 (define (InterpreterState-debug? state)
-  (let ((debug-state (InterpreterState-debug-state state)))
-    (cond
-      ((number? debug-state)
-        (if (<= debug-state 0)
-            (begin
-              (InterpreterState-debug-off! state)
-              #f)
-            (begin
-              (InterpreterState-debug-state-set! state (- debug-state 1))
-              #t)))
-      (debug-state #t)
-      (else #f))))
+  (let* ((debug-state (InterpreterState-debug-state state))
+         (debug-predicate (InterpreterState-debug-predicate state))
+         (predicate? (lambda () (or (not debug-predicate) (debug-predicate state)))))
+    (and debug-state
+         (cond
+          ((number? debug-state)
+            (cond
+              ((<= debug-state 0) (InterpreterState-debug-off! state) #f)
+              ((predicate?) (InterpreterState-debug-state-set! state (- debug-state 1)) #t)
+              (else #f)))
+          (else (predicate?))))))
 
 (define (InterpreterState-debug-log state)
   (when (InterpreterState-debug? state)
@@ -6195,10 +6197,12 @@
 (define (InterpreterState-##gvm-interpreter-debug state #!optional (arg 1)
                                                         #!key (tag #f)
                                                               (shift-left 0)
-                                                              (shift-right 0))
+                                                              (shift-right 0)
+                                                              (predicate #f))
   (InterpreterState-debug-tag-set! state tag)
   (InterpreterState-debug-shift-left-set! state shift-left)
   (InterpreterState-debug-shift-right-set! state shift-right)
+  (InterpreterState-debug-predicate-set! state (eval predicate))
   (cond
     ((number? arg) (InterpreterState-debug-count! state arg))
     (arg (InterpreterState-debug-on! state))
