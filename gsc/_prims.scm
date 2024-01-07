@@ -7129,27 +7129,27 @@
 (def-type-narrow "char?"
   (lambda (tctx args)
     (let ((arg (car args)))
-      (type-narrow-type-test tctx type-char arg))))
+      (type-narrow-type-test2 tctx type-char char? arg))))
 
 (def-type-narrow "symbol?"
   (lambda (tctx args)
     (let ((arg (car args)))
-      (type-narrow-type-test tctx type-symbol arg))))
+      (type-narrow-type-test2 tctx type-symbol symbol-object? arg))))
 
 (def-type-narrow "keyword?"
   (lambda (tctx args)
     (let ((arg (car args)))
-      (type-narrow-type-test tctx type-keyword arg))))
+      (type-narrow-type-test2 tctx type-keyword keyword-object? arg))))
 
 (def-type-narrow "string?"
   (lambda (tctx args)
     (let ((arg (car args)))
-      (type-narrow-type-test tctx type-string arg))))
+      (type-narrow-type-test2 tctx type-string string? arg))))
 
 (def-type-narrow "vector?"
   (lambda (tctx args)
     (let ((arg (car args)))
-      (type-narrow-type-test tctx type-vector arg))))
+      (type-narrow-type-test2 tctx type-vector vector-object? arg))))
 
 (type-narrow-set!
  "##vector-in-bounds?"
@@ -7161,62 +7161,62 @@
 (def-type-narrow "u8vector?"
   (lambda (tctx args)
     (let ((arg (car args)))
-      (type-narrow-type-test tctx type-u8vector arg))))
+      (type-narrow-type-test2 tctx type-u8vector u8vect? arg))))
 
 (def-type-narrow "s8vector?"
   (lambda (tctx args)
     (let ((arg (car args)))
-      (type-narrow-type-test tctx type-s8vector arg))))
+      (type-narrow-type-test2 tctx type-s8vector s8vect? arg))))
 
 (def-type-narrow "u16vector?"
   (lambda (tctx args)
     (let ((arg (car args)))
-      (type-narrow-type-test tctx type-u16vector arg))))
+      (type-narrow-type-test2 tctx type-u16vector u16vect? arg))))
 
 (def-type-narrow "s16vector?"
   (lambda (tctx args)
     (let ((arg (car args)))
-      (type-narrow-type-test tctx type-s16vector arg))))
+      (type-narrow-type-test2 tctx type-s16vector s16vect? arg))))
 
 (def-type-narrow "u32vector?"
   (lambda (tctx args)
     (let ((arg (car args)))
-      (type-narrow-type-test tctx type-u32vector arg))))
+      (type-narrow-type-test2 tctx type-u32vector u32vect? arg))))
 
 (def-type-narrow "s32vector?"
   (lambda (tctx args)
     (let ((arg (car args)))
-      (type-narrow-type-test tctx type-s32vector arg))))
+      (type-narrow-type-test2 tctx type-s32vector s32vect? arg))))
 
 (def-type-narrow "u64vector?"
   (lambda (tctx args)
     (let ((arg (car args)))
-      (type-narrow-type-test tctx type-u64vector arg))))
+      (type-narrow-type-test2 tctx type-u64vector u64vect? arg))))
 
 (def-type-narrow "s64vector?"
   (lambda (tctx args)
     (let ((arg (car args)))
-      (type-narrow-type-test tctx type-s64vector arg))))
+      (type-narrow-type-test2 tctx type-s64vector s64vect? arg))))
 
 (def-type-narrow "f32vector?"
   (lambda (tctx args)
     (let ((arg (car args)))
-      (type-narrow-type-test tctx type-f32vector arg))))
+      (type-narrow-type-test2 tctx type-f32vector f32vect? arg))))
 
 (def-type-narrow "f64vector?"
   (lambda (tctx args)
     (let ((arg (car args)))
-      (type-narrow-type-test tctx type-f64vector arg))))
+      (type-narrow-type-test2 tctx type-f64vector f64vect? arg))))
 
 (def-type-narrow "pair?"
   (lambda (tctx args)
     (let ((arg (car args)))
-      (type-narrow-type-test tctx type-pair arg))))
+      (type-narrow-type-test2 tctx type-pair pair? arg))))
 
 (def-type-narrow "procedure?"
   (lambda (tctx args)
     (let ((arg (car args)))
-      (type-narrow-type-test tctx type-procedure arg))))
+      (type-narrow-type-test2 tctx type-procedure proc-obj? arg))))
 
 (def-type-narrow "boolean?"
   (lambda (tctx args)
@@ -7430,6 +7430,16 @@
 (define (make-length-bound object offset)
   (vector object offset))
 
+(define (make-length-bound-lo object offset)
+  (if (exact-integer? offset)
+      (make-length-bound object offset)
+      '>=))
+
+(define (make-length-bound-hi object offset)
+  (if (exact-integer? offset)
+      (make-length-bound object offset)
+      '<=))
+
 (define (make-length-bound-or-overflow object offset)
   (declare (generic))
   (if (> offset 0)
@@ -7469,6 +7479,7 @@
   (max (length-bound-offset x)
        (length-bound-offset y)))
 
+#;
 (define (min-hi-length-bounds x y)
   (declare (generic))
   (if (and (= 0 (length-bound-offset x))
@@ -8412,7 +8423,7 @@
                tctx
                (if (length-bound? lo2)
                    (if (length-bound-same-object? lo1 lo2)
-                       (make-length-bound
+                       (make-length-bound-lo
                         (length-bound-object lo1)
                         (union-lo (length-bound-offset lo1)
                                   (length-bound-offset lo2)))
@@ -8437,7 +8448,7 @@
                tctx
                (if (length-bound? hi2)
                    (if (length-bound-same-object? hi1 hi2)
-                       (make-length-bound
+                       (make-length-bound-hi
                         (length-bound-object hi1)
                         (union-hi (length-bound-offset hi1)
                                   (length-bound-offset hi2)))
@@ -8500,8 +8511,9 @@
                          ((length-bound? lo1)
                           (if (length-bound? lo2)
                               (if (length-bound-same-object? lo1 lo2)
-                                  (make-length-bound (length-bound-object lo1)
-                                                     (max-lo-length-bounds lo1 lo2))
+                                  (make-length-bound
+                                   (length-bound-object lo1)
+                                   (max-lo-length-bounds lo1 lo2))
                                   (max-lo-length-bounds lo1 lo2))
                               (if (<= lo2 0)
                                   lo1
@@ -8524,9 +8536,10 @@
                          ((length-bound? hi1)
                           (if (length-bound? hi2)
                               (if (length-bound-same-object? hi1 hi2)
-                                  (make-length-bound (length-bound-object hi1)
-                                                     (min (length-bound-offset hi1)
-                                                          (length-bound-offset hi2)))
+                                  (make-length-bound
+                                   (length-bound-object hi1)
+                                   (min (length-bound-offset hi1)
+                                        (length-bound-offset hi2)))
                                   #; ;;TODO: remove old logic
                                   (min-hi-length-bounds hi1 hi2)
                                   (if (<= (length-bound-offset hi1)
@@ -10074,33 +10087,18 @@
                                                  (cdr lst)))))))))))))))))
 
 (define (type-narrow-fx= tctx type1 type2)
-  (declare (generic))
-
-  (define (pairwise-equal? . args)
-    (define (pairwise-equal?-aux args)
-      (if (or (null? args) (null? (cdr args)))
-        #t
-        (and (equal? (car args) (cadr args)) (pairwise-equal?-aux (cdr args)))))
-    (pairwise-equal?-aux args))
-
-  (let* ((f1 (type-motley-force tctx type1))
-         (fixnum-range1 (type-motley-fixnum-range f1))
-         (lo1 (type-fixnum-range-lo fixnum-range1))
-         (hi1 (type-fixnum-range-hi fixnum-range1))
-         (f2 (type-motley-force tctx type2))
-         (fixnum-range2 (type-motley-fixnum-range f2))
-         (lo2 (type-fixnum-range-lo fixnum-range2))
-         (hi2 (type-fixnum-range-hi fixnum-range2))
+  (let* ((inter
+          (type-intersection tctx type1 type2))
+         (inter
+          (cond ((type-eqv? inter type1) type1)
+                ((type-eqv? inter type2) type2)
+                (else                    inter)))
          (result
-          (cond
-            ((pairwise-equal? lo1 lo2 hi1 hi2) ;; equal singletons
-              (cons (list type1 type2) #f)) ;; always equal
-            ((or (type-fixnum-always-< hi1 lo2)
-                 (type-fixnum-always-< hi2 lo1))
-              (cons #f (list type1 type2))) ;; never equal
-            (else
-              (cons (list type1 type2)
-                    (list type1 type2))))))
+          (cons
+           (if (type-bot? inter) ;; types do not intersect?
+               #f ;; true branch impossible
+               (list inter inter))
+           (list type1 type2))))
     result))
 
 (define (type-fixnum-empty? lo hi)
@@ -10247,6 +10245,13 @@
                 (if (type-bot? diff)
                     #f ;; false branch impossible because arg is in type
                     (list (type-motley-normalize tctx diff))))))))
+
+(define (type-narrow-type-test2 tctx type pred? arg)
+  (if (and (type-singleton? arg)
+           (pred? (type-singleton-val arg)))
+      (cons (list arg)
+            #f)
+      (type-narrow-type-test tctx type arg)))
 
 (define (type-narrow-false tctx arg)
   (type-narrow-type-test tctx type-motley-false arg))

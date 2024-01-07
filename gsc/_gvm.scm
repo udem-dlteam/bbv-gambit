@@ -368,6 +368,7 @@
 ;; basic block set describes all the code of a procedure.
 
 (define (make-bbs)
+  (set! transform-to-case? #f) ;; TODO: remove
   (vector bbs-tag
           bbs-first-lbl                ;; 1 - next assignable label number
           (make-stretchable-vector #f) ;; 2 - vector of basic blocks
@@ -3205,6 +3206,8 @@
      new-bbs)
 
     new-bbs)
+
+  (set! type-top-counter 0) ;; TODO: find a better place for this...
 
 ;;  (write-bbs bbs (current-output-port))
 
