@@ -366,7 +366,8 @@
                  (make-specialization-call proc args))
                 (spec-call
                  (specialize-call call env)))
-           (call-proc spec-call)))))
+           (and spec-call
+                (call-proc spec-call))))))
 
 (define (specialize-call call env)
   (let ((proc (call-proc call))
