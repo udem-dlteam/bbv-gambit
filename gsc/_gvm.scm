@@ -5511,7 +5511,7 @@
 
           (for-each
             (lambda (slot index)
-              (if (frame-live? (list-ref slots (- slot 1)) frame)
+              (if (frame-live? (list-ref slots (- n-slots slot)) frame)
                   (proc (make-stk slot) (vector-ref types index))))
             (iota n-slots 1)
             (iota n-slots (+ locenv-start-regs (* 2 n-registers) 1) 2))))))
@@ -5644,7 +5644,8 @@
         (throw-error)))
 
   (define (throw-error slot-num value expected)
-    (error "GVM type error: in bb" (bb-lbl-num bb) slot-num "has value" value "but expected type" expected))
+    (error (list "GVM type error: in bb" (bb-lbl-num bb) slot-num "has value"
+                 (gvm-interpreter-obj->string state value) "but expected type" expected)))
 
   (register-lengths)
   (instr-for-each-type
@@ -6051,44 +6052,46 @@
                 (InterpreterState-transition state (make-Label (InterpreterState-bbs state) (ifjump-false instr)) 0 #f))))
         (error "ifjump test is not a primitive"))))
 
-(define (pp-gvm-obj state o)
-  (define (pp-with-tag tag . names)
-    (display "<<") (display tag)
-    (for-each (lambda (n) (display " ") (display n)) names)
-    (display ">>\n"))
+(define (gvm-interpreter-obj->string state o)
+  ;; use display with output port to handle cyclic structures
+  (define (obj->string-safe o)
+    (define output-port (open-output-string))
+    (display o output-port)
+    (get-output-string output-port))
 
-  (define (object->string-safe obj)
-    (let ((output-port (open-output-string)))
-      (display obj output-port)
-      (get-output-string output-port)))
+  (define (tag t . names)
+    (let ((elements
+            (append
+              (list "<<" t)
+              (map (lambda (n) (string-append " " (obj->string-safe n))) names)
+              '(">>"))))
+    (apply string-append elements)))
 
   (cond
     ((proc-obj? o)
-      (pp-with-tag "procedure" (proc-obj-name o)))
+      (tag "procedure" (proc-obj-name o)))
     ((Label? o)
       (let* ((lbl-bbs (Label-bbs o))
              (name (InterpreterState-get-bbs-name state lbl-bbs)))
-        (pp-with-tag
-          "label"
-          (or name "?")
-          (string-append "#" (number->string (Label-id o))))))
+        (tag "label"
+             (or name "?")
+             (string-append "#" (number->string (Label-id o))))))
     ((Closure? o)
       (let* ((clo-lbl (Closure-ref o 0))
              (clo-bbs (Label-bbs clo-lbl))
              (name (InterpreterState-get-bbs-name state clo-bbs)))
-        (pp-with-tag "closure" (or name "?"))))
+        (tag "closure" (or name "?"))))
     ((eq? o empty-stack-slot)
-      (display ".\n"))
+      (tag "."))
     ((symbol? o)
-      (println "'" o))
+      (string-append "'" (symbol->string o)))
     ((string? o)
-      (println "\"" o "\""))
+      (string-append "\"" o "\""))
     (else
-      (let ((s (object->string-safe o)))
-        (display (if (> (string-length s) 80)
-                      (string-append (substring s 0 80) "...")
-                      s))
-        (display "\n")))))
+      (let ((s (obj->string-safe o)))
+        (if (> (string-length s) 80)
+            (string-append (substring s 0 80) "...")
+            s)))))
 
 (define (InterpreterState-debug-on! state)
   (InterpreterState-debug-state-set! state #t))
@@ -6143,13 +6146,13 @@
         (lambda (i)
           (print "    " i)
           (print ": ")
-          (pp-gvm-obj state (stretchable-vector-ref registers i)))
+          (println (gvm-interpreter-obj->string state (stretchable-vector-ref registers i))))
         (iota (stretchable-vector-length registers)))
       (println "  Frame:")
       (for-each
         (lambda (i) 
           (print "    " i ": " )
-          (pp-gvm-obj state (RTE-frame-ref rte i)))
+          (println (gvm-interpreter-obj->string state (RTE-frame-ref rte i))))
         (iota (max entry-fs (+ nargs shift-left shift-right exit-fs)) (- 1 shift-left)))
       (println "  Instruction:")
       (print "    ")
