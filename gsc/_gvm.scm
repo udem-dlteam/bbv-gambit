@@ -5899,13 +5899,12 @@
         (Closure-slots-set! c slots)))
       parms closures)))
 
-(define (InterpreterState-get-args-positions state nargs)
+(define (InterpreterState-get-args-positions state nargs exit-fs)
   (let* ((nargs-stk (nb-args-on-stack nargs))
          (nargs-reg (nb-args-in-registers nargs))
-         (bb (InterpreterState-bb state))
-         (fs (bb-exit-frame-size bb)))
+         (bb (InterpreterState-bb state)))
     (append
-      (map make-stk (iota nargs-stk (- fs nargs-stk -1)))
+      (map make-stk (iota nargs-stk (- exit-fs nargs-stk -1)))
       (map make-reg (iota nargs-reg 1)))))
 
 (define (InterpreterState-execute-jump state instr)
@@ -5955,7 +5954,7 @@
           (InterpreterState-execute-call-primitive
             state
             (proc-obj-name target)
-            (InterpreterState-get-args-positions state nargs)
+            (InterpreterState-get-args-positions state nargs exit-fs)
             (lambda (result)
               ;; adjust frame to remove arguments on stack
               (Stack-frame-enter! stack (nb-args-on-stack nargs))
