@@ -5643,10 +5643,41 @@
     (when (not (and (typecheck-fixnum) (typecheck-generic)))
         (throw-error)))
 
-  (define (throw-error slot-num value expected)
-    (error (list "GVM type error: in bb" (bb-lbl-num bb) slot-num "has value"
-                 (gvm-interpreter-obj->string state value) "but expected type" expected)))
+  (define (check-return-labels)
+    (let* ((frame (gvm-instr-frame instr))
+           (regs (frame-regs frame))
+           (slots (frame-slots frame)))
+      (for-each
+        (lambda (r var)
+          (when (frame-live? var frame)
+                (let ((value (InterpreterState-ref state (make-reg r))))
+                  (if (and (eq? var ret-var)
+                           (not (has-type-return? value)))
+                    (throw-error (make-reg r) value "label")))))
+        (iota (length regs))
+        regs)
+      
+      (for-each
+        (lambda (i var)
+          (when (frame-live? var frame)
+                (let ((value (InterpreterState-ref state (make-stk i))))
+                  (if (and (eq? var ret-var)
+                           (not (has-type-return? value)))
+                    (throw-error (make-stk i) value "label")))))
+        (iota (length slots) 1)
+        (reverse slots))))
 
+  (define (throw-error slot-num value expected)
+    (InterpreterState-raise-error state
+                                  "GVM type error: in bb"
+                                  (bb-lbl-num bb)
+                                  slot-num
+                                  "has value"
+                                  (gvm-interpreter-obj->string state value)
+                                  "but expected type"
+                                  expected))
+
+  (check-return-labels)
   (register-lengths)
   (instr-for-each-type
     instr
@@ -5741,6 +5772,8 @@
             (make-table)                             ;; primitive counter
             (make-table test: eq? weak-keys: #t)))   ;; bbs-names
          (rte (InterpreterState-rte state)))
+    ;; connect RTE to the state
+    (RTE-state-set! rte state)
     ;; read name of each bbs from global proc objects
     (for-each (lambda (proc) (InterpreterState-register-bbs-name! state proc)) module-procs)
     ;; add sentinel that acts as program exit return address
@@ -5750,6 +5783,24 @@
                      '##gvm-interpreter-debug
                      gvm-interpreter-debug-proc-obj)
     state))
+
+(define (InterpreterState-raise-error state . messages)
+  (define (display-error s) (display s (current-error-port)))
+
+  (let* ((bbs (InterpreterState-bbs state))
+         (bb (InterpreterState-bb state))
+         (bbs-name (or (InterpreterState-get-bbs-name state bbs) "?"))
+         (bb-num (bb-lbl-num bb)))
+    (display-error "Gambint Error in BBS ")
+    (display-error bbs-name)
+    (display-error "- basic block #")
+    (display-error bb-num)
+    (display-error "\n ")
+    (for-each (lambda (s) (display-error " ") (display-error s)) messages)
+    (println)
+    (InterpreterState-##gvm-interpreter-debug state 1)
+    (InterpreterState-debug-log state)
+    (exit 1)))
 
 (define (InterpreterState-instr-index-increment! state last-instr)
   ;; increment index if instruction is not a jump
@@ -5801,7 +5852,7 @@
       ((jump)
         (InterpreterState-execute-jump state instr))
       (else
-        (error "unknown instruction" (gvm-instr-kind instr)))))
+        (InterpreterState-raise-error state "unknown instruction" (gvm-instr-kind instr)))))
 
 (define (InterpreterState-execute-copy state instr)
   (let* ((rte (InterpreterState-rte state))
@@ -5933,7 +5984,7 @@
             ret
             #f)))
       (else
-        (error "InterpreterState-transition" "NotImplemented") #f))))
+        (InterpreterState-raise-error state "wrong transition" (gvm-interpreter-obj->string target)) #f))))
 
 (define (InterpreterState-align-args state args nparams keys opts rest? clo)
   (define rte (InterpreterState-rte state))
@@ -5950,7 +6001,7 @@
 
   (define n-stored 0)
   (define (store a)
-    (if (= n-stored (vector-length actual-params)) (error "wrong number of arguments"))
+    (if (= n-stored (vector-length actual-params)) (InterpreterState-raise-error state "wrong number of arguments"))
     (vector-set! actual-params n-stored a)
     (set! n-stored (+ n-stored 1)))
 
@@ -5972,7 +6023,7 @@
   (let loop ()
     (if (< n-stored n-positional-args)
         (begin
-          (if (empty?) (error "missing argument") (consume))
+          (if (empty?) (InterpreterState-raise-error state "missing argument") (consume))
           (loop))))
 
   ;; optional arguments
@@ -5988,7 +6039,7 @@
                 (let ((key (pop)) (value (pop)))
                   (if (assq key keys)
                       (cons (cons key value) (loop))
-                      (error "unknown keyword argument")))
+                      (InterpreterState-raise-error state "unknown keyword argument")))
                 '()))))
       (for-each
         (lambda (pair)
@@ -6003,7 +6054,7 @@
     (rest?
       (store remaining-args))
     ((not (null? remaining-args))
-      (error "wrong number of arguments")))
+      (InterpreterState-raise-error state "wrong number of arguments")))
 
   ;; write args on stack/regs
   (let* ((closed? (if clo #t #f))
@@ -6050,7 +6101,7 @@
             (if result
                 (InterpreterState-transition state (make-Label (InterpreterState-bbs state) (ifjump-true instr)) 0 #f)
                 (InterpreterState-transition state (make-Label (InterpreterState-bbs state) (ifjump-false instr)) 0 #f))))
-        (error "ifjump test is not a primitive"))))
+        (InterpreterState-raise-error state "ifjump test is not a primitive"))))
 
 (define (gvm-interpreter-obj->string state o)
   ;; use display with output port to handle cyclic structures
@@ -6160,26 +6211,21 @@
       (println)
       (println "---"))))
 
-(define-macro (define-safe-getter signature . body)
-  (let* ((signature-extension (list '#!key (list 'safe #t)))
-         (safe-signature (append signature signature-extension))
-         (guarded-body
-          `(let ((result (begin ,@body)))
-              (if (and safe (eq? result empty-stack-slot)) (error "When reading empty slot"))
-              result)))
-    `(define ,safe-signature ,guarded-body)))
-
-(define-safe-getter (InterpreterState-ref state target)
+(define (InterpreterState-ref state target #!key (safe #t))
   (if (lbl? target)
     (make-Label (InterpreterState-bbs state) (lbl-num target))
-    (RTE-ref (InterpreterState-rte state) target safe: safe)))
+    (let ((value (RTE-ref (InterpreterState-rte state) target safe: safe)))
+      (if (and safe (eq? value empty-stack-slot))
+          (InterpreterState-raise-error state "reading empty slot")
+          value))))
 
 (define-type RTE
   ;; run time environment
   registers
   stack
   global-env
-  primitives)
+  primitives
+  state)
 
 (define (add-default-primitive-to-primitives-table! primitives-table)
   (define (try-eval sexp) (with-exception-handler (lambda (exc) #f) (lambda () (eval sexp))))
@@ -6229,7 +6275,7 @@
 
   (register!
     "##dead-end"
-    (lambda (state args cont) (error "Interpreter reached ##dead-end")))
+    (lambda (state args cont) (InterpreterState-raise-error state "reached ##dead-end")))
 
   (register!
     "##apply"
@@ -6337,7 +6383,8 @@
     (make-stretchable-vector 0)       ;; registers
     (init-Stack)                      ;; stack
     (make-table)                      ;; global env
-    (make-gvm-primitives)))           ;; primitive table
+    (make-gvm-primitives)             ;; primitive table
+    #f))                              ;; state           
 
 (define (RTE-registers-ref rte i) (stretchable-vector-ref (RTE-registers rte) i))
 (define (RTE-registers-set! rte i v) (stretchable-vector-set! (RTE-registers rte) i v))
@@ -6347,13 +6394,16 @@
 (define (RTE-global-set! rte name v) (table-set! (RTE-global-env rte) name v))
 (define (RTE-primitive-ref rte name) (table-ref (RTE-primitives rte) name))
 
-(define-safe-getter (RTE-args-ref rte nargs i)
+(define (RTE-args-ref rte nargs i #!key (safe #t))
   (let* ((nb-arg-registers (min nargs backend-nb-args-in-registers))
          (nb-arg-frames (- nargs nb-arg-registers))
-         (stack (RTE-stack rte)))
-    (if (< i nb-arg-frames)
-        (Stack-ref stack (- (+ (Stack-stack-pointer stack) i) nb-arg-frames))
-        (RTE-registers-ref rte (- i nb-arg-frames -1)))))
+         (stack (RTE-stack rte))
+         (value (if (< i nb-arg-frames)
+                    (Stack-ref stack (- (+ (Stack-stack-pointer stack) i) nb-arg-frames))
+                    (RTE-registers-ref rte (- i nb-arg-frames -1)))))
+    (if (and safe (eq? value empty-stack-slot))
+        (InterpreterState-raise-error (RTE-state rte) "reading empty slot")
+        value)))
   
 (define (RTE-param-set! rte nparams i param)
   (let* ((nb-param-registers (min nparams backend-nb-args-in-registers))
@@ -6371,7 +6421,7 @@
     ((clo? target) (Closure-set! (RTE-ref rte (clo-base target)) (clo-index target) value))
     (else (error "cannot write to" target))))
 
-(define-safe-getter (RTE-ref rte target)
+(define (RTE-ref rte target #!key (safe #t))
   (let ((result
           (cond
             ((reg? target) (RTE-registers-ref rte (reg-num target)))
@@ -6380,7 +6430,9 @@
             ((clo? target) (Closure-ref (RTE-ref rte (clo-base target)) (clo-index target)))
             ((obj? target) (obj-val target))
             (else (error "cannot read from" target)))))
-    result))
+    (if (and safe (eq? result empty-stack-slot))
+        (InterpreterState-raise-error (RTE-state rte) "reading empty slot")
+        result)))
 
 (define-type Stack
   frame-pointer
