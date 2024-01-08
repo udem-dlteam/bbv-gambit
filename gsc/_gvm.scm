@@ -6082,7 +6082,7 @@
              (name (InterpreterState-get-bbs-name state clo-bbs)))
         (tag "closure" (or name "?"))))
     ((eq? o empty-stack-slot)
-      (tag "."))
+      ".")
     ((symbol? o)
       (string-append "'" (symbol->string o)))
     ((string? o)
