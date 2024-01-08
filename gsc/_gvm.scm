@@ -5499,7 +5499,6 @@
                (frame (gvm-instr-frame instr))
                (regs (frame-regs frame))
                (slots (frame-slots frame)))
-
           (for-each
             (lambda (reg index)
               (if (frame-live? (list-ref regs reg) frame)
@@ -5703,6 +5702,8 @@
   primitive-counter
   bbs-names)
 
+(define (InterpreterState-stack state) (RTE-stack (InterpreterState-rte state)))
+
 (define gvm-interpreter-debug-proc-obj
   (make-proc-obj ;; I don't know what these do, but they are not used anyway
     "##gvm-interpreter-debug"
@@ -5869,6 +5870,7 @@
         (mark-exit-jump state)
         (InterpreterState-done?-set! state #t))
       ((HostContinuation? target)
+        (Stack-frame-exit! (InterpreterState-stack state) exit-fs)
         (HostContinuation-call target))
       ((Label? target)
         (let ((target-bbs (Label-bbs target)))
@@ -5913,7 +5915,8 @@
                     (make-Label current-bbs ret)
                     (InterpreterState-ref state backend-return-label-location))
                 0
-                #f)))))
+                #f
+                exit-fs: exit-fs)))))
       ((proc-obj? target)
         (let* ((target-bbs (proc-obj-code target))
                (target-entry-lbl (bbs-entry-lbl-num target-bbs)))
@@ -6231,7 +6234,7 @@
               (proc (car args))
               (proc-args (cadr args))
               (nargs (length proc-args))
-              (dummy-fs (max 0 (- nargs backend-nb-args-in-registers))))
+              (dummy-fs (nb-args-on-stack nargs)))
         (define r0 (RTE-ref rte backend-return-label-location))
 
         ;; create a dummy frame for arguments
@@ -6243,7 +6246,6 @@
           (iota nargs)
           proc-args)
         ;; prepare the frame for the callee
-        (Stack-frame-exit! stack dummy-fs)
         (InterpreterState-transition
           state
           proc
@@ -6251,6 +6253,7 @@
           (make-HostContinuation
             (lambda ()
               ;; exit the argument dummy frame
+              (Stack-frame-enter! stack dummy-fs)
               (Stack-frame-exit! stack 0)
               (Stack-frame-enter! stack fs)
               ;; return result
@@ -6273,6 +6276,7 @@
         (define acc '())
         (define (return)
           ;; exit the argument dummy frame
+          (Stack-frame-enter! stack dummy-fs)
           (Stack-frame-exit! stack 0)
           (Stack-frame-enter! stack fs)
           (RTE-set! rte backend-return-label-location r0)
@@ -6294,8 +6298,6 @@
                     (lambda (i arg) (RTE-param-set! rte nargs i arg))
                     (iota nargs)
                     args)
-                  ;; prepare the frame for the callee
-                  (Stack-frame-exit! stack dummy-fs)
                   ;; call
                   (InterpreterState-transition
                     state
