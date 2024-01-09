@@ -5764,7 +5764,7 @@
             (lbl-num->bb entry-lbl-num main-bbs)     ;; bb
             0                                        ;; instr index
             #f                                       ;; done?
-            #t                                       ;; debug-state
+            #f                                       ;; debug-state
             #f                                       ;; debug-tag
             0                                        ;; debug-shift-left
             0                                        ;; debug-shift-right
@@ -5943,13 +5943,11 @@
                (opnds (InterpreterState-get-args-positions state nargs exit-fs))
                (args (map (lambda (opnd) (InterpreterState-ref state opnd)) opnds)))
           (if jumpable
-            (begin
-              (Stack-frame-exit-flush-args! stack exit-fs nargs)
-              (jumpable state args ret-label))
-            (begin
+            (jumpable state args ret-label)
+            (let ((new-fs (- exit-fs (nb-args-on-stack nargs))))
               (InterpreterState-set! state backend-return-result-location
                                     (InterpreterState-apply-inlinable-primitive state name args))
-              (InterpreterState-goto state (Label-bbs ret-label) (Label-id ret-label) exit-fs)))))
+              (InterpreterState-goto state (Label-bbs ret-label) (Label-id ret-label) new-fs)))))
       ((proc-obj? target)
         (let ((target-bbs (proc-obj-code target)))
           (InterpreterState-call-goto
@@ -6069,6 +6067,7 @@
     (if (eq? (label-kind label-instr) 'entry)
         (let ((args (map (lambda (i) (RTE-args-ref rte nargs i)) (iota nargs))))
           (Stack-frame-enter! stack entry-fs)
+          (Stack-adjust-call-frame! stack nargs entry-fs)
           (InterpreterState-align-args
             state
             args
@@ -6165,8 +6164,8 @@
               (else #f)))
           (else (predicate?))))))
 
-(define (InterpreterState-debug-log state)
-  (when (InterpreterState-debug? state)
+(define (InterpreterState-debug-log state #!key (force #f))
+  (when (or force (InterpreterState-debug? state))
     (let* ((rte (InterpreterState-rte state))
            (stack (RTE-stack rte))
            (registers (RTE-registers rte))
@@ -6256,7 +6255,7 @@
     "##gvm-interpreter-debug"
     (lambda (state args ret-label)
       (apply InterpreterState-##gvm-interpreter-debug state args)
-      (cont #f)))
+      (InterpreterState-goto state (Label-bbs ret-label) (Label-id ret-label) 0)))
 
   (register!
     "##dead-end"
@@ -6265,17 +6264,20 @@
   (register!
     "##apply"
     (lambda (state args ret-label)
-      (let* ((fs (bb-exit-frame-size (InterpreterState-bb state)))
-              (rte (InterpreterState-rte state))
-              (stack (RTE-stack rte))
-              (proc (car args))
-              (proc-args (cadr args))
-              (nargs (length proc-args))
-              (dummy-fs (nb-args-on-stack nargs))
-              (opnds (InterpreterState-get-args-positions state nargs dummy-fs)))
-        (Stack-frame-enter! stack 0)
+      (let* ((fs (bb-entry-frame-size (InterpreterState-bb state)))
+             (rte (InterpreterState-rte state))
+             (stack (RTE-stack rte))
+             (proc (car args))
+             (proc-args (cadr args))
+             (nargs (length proc-args))
+             (new-exit-fs (+ fs (nb-args-on-stack nargs)))
+             (opnds (InterpreterState-get-args-positions state nargs new-exit-fs)))
+
+        ;; Add apply arguments to frame
         (for-each (lambda (loc arg) (RTE-set! rte loc arg)) opnds proc-args)
-        (InterpreterState-jump state proc nargs dummy-fs ret-label))))
+
+        ;; jump with new frame size
+        (InterpreterState-jump state proc nargs new-exit-fs ret-label))))
 
   (add-primitive-counter-to-primitives-table! primitives-table)
   primitives-table)
@@ -6347,7 +6349,10 @@
 (define (Stack-frame-set! s i v) (Stack-set! s (Stack-frame-index s i) v))
 (define (Stack-frame-enter! s fs) (Stack-frame-pointer-set! s (- (Stack-stack-pointer s) fs)))
 (define (Stack-frame-exit! s fs) (Stack-stack-pointer-set! s (+ (Stack-frame-pointer s) fs)))
-(define (Stack-frame-exit-flush-args! s fs nargs) (Stack-frame-exit! s (- fs (nb-args-on-stack nargs))))
+(define (Stack-adjust-call-frame! s nargs entry-fs)
+  (define shift-by (max 0 (- (nb-args-on-stack nargs) entry-fs)))
+  (Stack-frame-pointer-set! s (- (Stack-frame-pointer s) shift-by))
+  (Stack-stack-pointer-set! s (- (Stack-stack-pointer s) shift-by)))
 
 (define (init-Stack)
   (make-Stack
