@@ -5865,7 +5865,9 @@
   (define (try-eval sexp) (with-exception-handler (lambda (exc) #f) (lambda () (eval sexp))))
   (define sym-name (string->symbol name))
 
-  (let ((prim (try-eval sym-name)))
+  (let ((prim (if (eq? sym-name '##first-argument)
+                  (lambda (first . rest) (if (null? rest) first (car rest))) ;; hack for bbv benchmarks
+                  (try-eval sym-name))))                                     ;; remove once done
     (if (not prim) (InterpreterState-raise-error state "unknown primitive" name))
     (InterpreterState-primitive-counter-increment state sym-name)
     (apply prim args)))
