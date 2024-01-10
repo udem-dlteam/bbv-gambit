@@ -5949,7 +5949,10 @@
             (let ((new-fs (- exit-fs (nb-args-on-stack nargs))))
               (InterpreterState-set! state backend-return-result-location
                                     (InterpreterState-apply-inlinable-primitive state name args))
-              (InterpreterState-goto state (Label-bbs ret-label) (Label-id ret-label) new-fs)))))
+              ;; if a return label is provided use it otherwise it was a tail-call and the return
+              ;; location is in r0
+              (let ((ret (or ret-label (InterpreterState-ref state backend-return-label-location))))
+                (InterpreterState-goto state (Label-bbs ret) (Label-id ret) new-fs))))))
       ((proc-obj? target)
         (let ((target-bbs (proc-obj-code target)))
           (InterpreterState-call-goto
@@ -6251,7 +6254,12 @@
 
 (define (make-gvm-jumpable-primitives)
   (define primitives-table (make-table))
-  (define (register! name proc) (table-set! primitives-table name proc))
+  (define (register! names proc)
+    (define (_register! name proc) (table-set! primitives-table name proc))
+    (if (string? names)
+        (_register! names proc)
+        (for-each (lambda (name) (_register! name proc)) names)))
+
 
   (register!
     "##gvm-interpreter-debug"
@@ -6264,13 +6272,13 @@
     (lambda (state . _) (InterpreterState-raise-error state "reached ##dead-end")))
 
   (register!
-    "##apply"
+    '("##apply" "apply")
     (lambda (state args ret-label)
       (let* ((fs (bb-entry-frame-size (InterpreterState-bb state)))
              (rte (InterpreterState-rte state))
              (stack (RTE-stack rte))
              (proc (car args))
-             (proc-args (cadr args))
+             (proc-args (apply apply list (cdr args)))
              (nargs (length proc-args))
              (new-exit-fs (+ fs (nb-args-on-stack nargs)))
              (opnds (InterpreterState-get-args-positions state nargs new-exit-fs)))
