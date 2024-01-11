@@ -5673,9 +5673,13 @@
         (reverse slots))))
 
   (define (throw-error slot-num value expected)
+    (define slot-name
+      (cond ((reg? slot-num) (string-append "reg[" (number->string (reg-num slot-num)) "]"))
+            ((stk? slot-num) (string-append "frame[" (number->string (stk-num slot-num)) "]"))
+            (else slot-num)))
     (InterpreterState-raise-error state
-                                  "GVM type error: "
-                                  slot-num
+                                  "GVM type error:"
+                                  slot-name
                                   "has value"
                                   (gvm-interpreter-obj->string state value)
                                   "but expected type"
