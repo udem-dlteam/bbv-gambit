@@ -5482,7 +5482,7 @@
            (n-slots (vector-ref type-locs 1)))
   (if (<= slot n-slots)
       (vector-ref types (+ (* (- slot 1) 2) (+ locenv-start-regs (* 2 n-registers) 1)))
-      (error "the following frame slot is not live but is being checked" reg))))
+      (error "the following frame slot is not live but is being checked" slot))))
 
 (define (get-expected-type-at types loc)
   (cond
@@ -5691,7 +5691,8 @@
             expected-type))))))
 
 (define backend-nb-args-in-registers 3) ;; TODO: get from backend
-(define backend-return-label-location (reg-num 0)) ;; register 0
+(define backend-return-label-location (reg-num 0))
+(define backend-closure-location (make-reg 4))
 (define backend-return-result-location (make-reg 1))
 (define (nb-args-on-stack nb-args) (max 0 (- nb-args backend-nb-args-in-registers)))
 (define (nb-args-in-registers nb-args) (- nb-args (nb-args-on-stack nb-args)))
@@ -5793,14 +5794,12 @@
          (bb-num (bb-lbl-num bb)))
     (display-error "Gambint Error in BBS ")
     (display-error bbs-name)
-    (display-error "- basic block #")
+    (display-error " - basic block #")
     (display-error bb-num)
     (display-error "\n ")
     (for-each (lambda (s) (display-error " ") (display-error s)) messages)
-    (println)
-    (InterpreterState-##gvm-interpreter-debug state 1)
-    (InterpreterState-debug-log state)
-    (exit 1)))
+    (display-error "\n")
+    (error 1)))
 
 (define (InterpreterState-instr-index-increment! state last-instr)
   ;; increment index if instruction is not a jump
@@ -5941,18 +5940,17 @@
             target)))
       ((gvm-proc-obj-primitive? target)
         (let* ((name (proc-obj-name target))
-               (jumpable (InterpreterState-jumpable-primitive? state name))
-               (opnds (InterpreterState-get-args-positions state nargs exit-fs))
-               (args (map (lambda (opnd) (InterpreterState-ref state opnd)) opnds)))
+               (jumpable (InterpreterState-jumpable-primitive? state name)))
+          (if exit-fs (Stack-frame-exit! stack exit-fs))
           (if jumpable
-            (jumpable state args ret-label)
-            (let ((new-fs (- exit-fs (nb-args-on-stack nargs))))
+            (jumpable state nargs ret-label)
+            (let ((args (InterpreterState-pop-args! state nargs)))
               (InterpreterState-set! state backend-return-result-location
                                     (InterpreterState-apply-inlinable-primitive state name args))
               ;; if a return label is provided use it otherwise it was a tail-call and the return
               ;; location is in r0
               (let ((ret (or ret-label (InterpreterState-ref state backend-return-label-location))))
-                (InterpreterState-goto state (Label-bbs ret) (Label-id ret) new-fs))))))
+                (InterpreterState-goto state (Label-bbs ret) (Label-id ret) #f))))))
       ((proc-obj? target)
         (let ((target-bbs (proc-obj-code target)))
           (InterpreterState-call-goto
@@ -5978,7 +5976,7 @@
          (exit-fs (bb-exit-frame-size (InterpreterState-bb state))))
     (InterpreterState-jump state target nargs exit-fs ret-label)))
 
-(define (InterpreterState-align-args state args nparams keys opts rest? clo)
+(define (InterpreterState-align-args! state args nparams keys opts rest? clo)
   (define rte (InterpreterState-rte state))
   (define stack (RTE-stack rte))
   (define empty (gensym 'empty))
@@ -6049,11 +6047,23 @@
       (InterpreterState-raise-error state "wrong number of arguments")))
 
   ;; write args on stack/regs
-  (let* ((closed? (if clo #t #f))
-         (params-info (get-label-parameters-info nparams closed?))
-         (args-loc (get-args-loc params-info)))
-    (if closed? (RTE-set! rte (get-closure-loc params-info) clo))
-    (for-each (lambda (loc a) (RTE-set! rte loc a)) args-loc (vector->list actual-params))))
+  (InterpreterState-push-args! state (vector->list actual-params))
+  (if clo (InterpreterState-set! state backend-closure-location clo)))
+
+(define (InterpreterState-push-args! state params)
+  (let ((nparams (length params))
+        (stack (InterpreterState-stack state)))
+    (let loop ((i (nb-args-on-stack nparams))
+               (params params))
+      (if (> i 0)    
+          (begin
+            (Stack-push! stack (car params))
+            (loop (- i 1) (cdr params)))
+          (for-each
+            (lambda (r arg) (InterpreterState-set! state (make-reg r) arg))
+            (iota (nb-args-in-registers nparams) 1)
+            params)))))
+
 
 (define (InterpreterState-goto state bbs lbl exit-fs)
   (InterpreterState-closure-call-goto state bbs lbl exit-fs #f #f #f))
@@ -6068,19 +6078,18 @@
          (label-instr (bb-label-instr bb))
          (entry-fs (bb-entry-frame-size bb)))
     (increment-branch-counter (InterpreterState-current-instruction state) bbs bb)
-    (Stack-frame-exit! stack exit-fs)
+    (if exit-fs (Stack-frame-exit! stack exit-fs))
     (if (eq? (label-kind label-instr) 'entry)
-        (let ((args (map (lambda (i) (RTE-args-ref rte nargs i)) (iota nargs))))
-          (Stack-frame-enter! stack entry-fs)
-          (Stack-adjust-call-frame! stack nargs entry-fs)
-          (InterpreterState-align-args
+        (let ((args (InterpreterState-pop-args! state nargs)))
+          (InterpreterState-align-args!
             state
             args
             (label-entry-nb-parms label-instr)
             (label-entry-keys label-instr)
             (label-entry-opts label-instr)
             (label-entry-rest? label-instr)
-            clo))
+            clo)
+          (Stack-frame-enter! stack entry-fs))
         (Stack-frame-enter! stack entry-fs))
     (if ret (RTE-set! rte backend-return-label-location ret))
     (InterpreterState-bbs-set! state bbs)
@@ -6182,10 +6191,7 @@
            (bb (InterpreterState-bb state))
            (entry-fs (bb-entry-frame-size bb))
            (exit-fs (bb-exit-frame-size bb))
-           (nb-params (bb-entry-nb-params bb))
-           (shift-left (min (Stack-frame-pointer stack)
-                            (+ (InterpreterState-debug-shift-left state)
-                               (if nb-params (nb-args-on-stack nb-params) 0))))
+           (shift-left (InterpreterState-debug-shift-left state))
            (shift-right (InterpreterState-debug-shift-right state))
            (instr (InterpreterState-current-instruction state))
            (nargs (if (eq? (gvm-instr-kind instr) 'jump)
@@ -6204,11 +6210,18 @@
           (println (gvm-interpreter-obj->string state (stretchable-vector-ref registers i))))
         (iota (stretchable-vector-length registers)))
       (println "  Frame:")
-      (for-each
-        (lambda (i) 
-          (print "    " i ": " )
-          (println (gvm-interpreter-obj->string state (RTE-frame-ref rte i))))
-        (iota (max entry-fs (+ nargs shift-left shift-right exit-fs)) (- 1 shift-left)))
+      (let* ((fp (Stack-frame-pointer stack))
+             (sp (Stack-stack-pointer stack))
+             (start (max 0 (- fp shift-left)))
+             (end (+ sp shift-right 1)))
+        (for-each
+          (lambda (i)
+            (define pre (cond ((= i sp) " sp ")
+                              ((= i fp) " fp ")
+                              (else     "    ")))
+            (print pre i ": " )
+            (println (gvm-interpreter-obj->string state (Stack-ref stack i))))
+          (iota (- end start) start)))
       (println "  Instruction:")
       (print "    ")
       (let ((port (open-output-string)))
@@ -6227,6 +6240,17 @@
 
 (define (InterpreterState-set! state target value)
   (RTE-set! (InterpreterState-rte state) target value))
+
+(define (InterpreterState-pop-args! state nargs)
+  (let ((rte (InterpreterState-rte state))
+        (stack (InterpreterState-stack state)))
+    (let loop ((i (nb-args-on-stack nargs))
+               (args (map
+                       (lambda (i) (InterpreterState-ref state (make-reg i)))
+                       (iota (nb-args-in-registers nargs) 1))))
+      (if (> i 0)
+          (loop (- i 1) (cons (Stack-pop! stack) args))
+          args))))
 
 (define-type RTE
   ;; run time environment
@@ -6270,9 +6294,11 @@
 
   (register!
     "##gvm-interpreter-debug"
-    (lambda (state args ret-label)
-      (apply InterpreterState-##gvm-interpreter-debug state args)
-      (InterpreterState-goto state (Label-bbs ret-label) (Label-id ret-label) 0)))
+    (lambda (state nargs ret-label)
+      (apply InterpreterState-##gvm-interpreter-debug
+             state
+            (InterpreterState-pop-args! state nargs))
+      (InterpreterState-goto state (Label-bbs ret-label) (Label-id ret-label) #f)))
 
   (register!
     "##dead-end"
@@ -6280,35 +6306,15 @@
 
   (register!
     '("##apply" "apply")
-    (lambda (state args ret-label)
-      (let* ((rte (InterpreterState-rte state))
-             (stack (RTE-stack rte))
-             (nargs (length args))
-             (procedure (car args))
-             (apply-args (cdr args))
+    (lambda (state nargs ret-label)
+      (let* ((apply-args (InterpreterState-pop-args! state nargs))
+             (procedure (car apply-args))
+             (args (cdr apply-args))
              (positionals
-              (let loop ((a apply-args))
-                (if (pair? (cdr a)) (cons (car a) (loop (cdr a))) (car a))))
-             (rest (last apply-args))
-             (all-args (append positionals rest))
-             ;; apply is called with (apply proc pos1 pos2 ... posN rest)
-             ;; we remove the procedure from the frame -1
-             ;; we shift the positional arguments but leave them in the frame
-             ;; we remove the rest argument -1
-             ;; we unpack the rest argument + (length rest)
-             ;; total = (length rest) - 2
-             (extra-nargs (- (length rest) 2))
-             (extra-fs (- (nb-args-on-stack (+ nargs extra-nargs))
-                          (nb-args-on-stack nargs)))
-             (fs (bb-exit-frame-size (InterpreterState-bb state)))
-             (new-exit-fs (+ fs extra-fs))
-             (opnds (InterpreterState-get-args-positions state nargs new-exit-fs)))
-
-        ;; Add apply arguments to frame
-        (for-each (lambda (loc arg) (RTE-set! rte loc arg)) opnds all-args)
-
-        ;; jump with new frame size
-        (InterpreterState-jump state procedure nargs new-exit-fs ret-label))))
+               (let loop ((a args))
+                 (if (pair? (cdr a)) (cons (car a) (loop (cdr a))) (car a)))))
+        (InterpreterState-push-args! state positionals)
+        (InterpreterState-jump state procedure (length positionals) #f ret-label))))
 
   (add-primitive-counter-to-primitives-table! primitives-table)
   primitives-table)
@@ -6327,17 +6333,6 @@
 (define (RTE-frame-set! rte i v) (Stack-frame-set! (RTE-stack rte) i v))
 (define (RTE-global-ref rte name) (table-ref (RTE-global-env rte) name))
 (define (RTE-global-set! rte name v) (table-set! (RTE-global-env rte) name v))
-
-(define (RTE-args-ref rte nargs i #!key (safe #t))
-  (let* ((nb-arg-registers (min nargs backend-nb-args-in-registers))
-         (nb-arg-frames (- nargs nb-arg-registers))
-         (stack (RTE-stack rte))
-         (value (if (< i nb-arg-frames)
-                    (Stack-ref stack (- (+ (Stack-stack-pointer stack) i) nb-arg-frames))
-                    (RTE-registers-ref rte (- i nb-arg-frames -1)))))
-    (if (and safe (eq? value empty-stack-slot))
-        (InterpreterState-raise-error (RTE-state rte) "reading empty slot")
-        value)))
   
 (define (RTE-param-set! rte nparams i param)
   (let* ((nb-param-registers (min nparams backend-nb-args-in-registers))
@@ -6380,10 +6375,17 @@
 (define (Stack-frame-set! s i v) (Stack-set! s (Stack-frame-index s i) v))
 (define (Stack-frame-enter! s fs) (Stack-frame-pointer-set! s (- (Stack-stack-pointer s) fs)))
 (define (Stack-frame-exit! s fs) (Stack-stack-pointer-set! s (+ (Stack-frame-pointer s) fs)))
-(define (Stack-adjust-call-frame! s nargs entry-fs)
-  (define shift-by (max 0 (- (nb-args-on-stack nargs) entry-fs)))
-  (Stack-frame-pointer-set! s (- (Stack-frame-pointer s) shift-by))
-  (Stack-stack-pointer-set! s (- (Stack-stack-pointer s) shift-by)))
+(define (Stack-stack-pointer-increment! s #!optional (n 1))
+  (Stack-stack-pointer-set! s (+ (Stack-stack-pointer s) n)))
+(define (Stack-stack-pointer-decrement! s) (Stack-stack-pointer-increment! s -1))
+(define (Stack-pop! s)
+  (let* ((sp (Stack-stack-pointer s))
+         (value (Stack-ref s (- sp 1))))
+    (Stack-stack-pointer-decrement! s)
+    value))
+(define (Stack-push! s value)
+  (Stack-set! s (Stack-stack-pointer s) value)
+  (Stack-stack-pointer-increment! s 1))
 
 (define (init-Stack)
   (make-Stack
