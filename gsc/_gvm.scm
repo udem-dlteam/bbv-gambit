@@ -5517,6 +5517,7 @@
             (iota n-slots (+ locenv-start-regs (* 2 n-registers) 1) 2))))))
 
 (define (assert-types state instr)
+  (define assert? #t)
   (define tctx (make-tctx))
   (define rte (InterpreterState-rte state))
   (define bb (InterpreterState-bb state))
@@ -5685,18 +5686,19 @@
                                   "but expected type"
                                   expected))
 
-  ;(check-return-labels)
-  (register-lengths)
-  (instr-for-each-type
-    instr
-    (lambda (loc expected-type)
-      (let ((value (InterpreterState-ref state loc safe: #f))
-            (expected-type (type-motley-force tctx expected-type)))
-        (if (not (eq? value empty-stack-slot))
-          (typecheck
-            (lambda () (throw-error loc value expected-type))
-            value
-            expected-type))))))
+  (when assert?
+    ;(check-return-labels)
+    (register-lengths)
+    (instr-for-each-type
+      instr
+      (lambda (loc expected-type)
+        (let ((value (InterpreterState-ref state loc safe: #f))
+              (expected-type (type-motley-force tctx expected-type)))
+          (if (not (eq? value empty-stack-slot))
+            (typecheck
+              (lambda () (throw-error loc value expected-type))
+              value
+              expected-type)))))))
 
 (define backend-nb-args-in-registers 3) ;; TODO: get from backend
 (define backend-return-label-location (reg-num 0))
@@ -5808,7 +5810,31 @@
     (display-error bbs-name)
     (display-error " - basic block #")
     (display-error bb-num)
-    (display-error "\n ")
+    (display-error "\n  ")
+    (let* ((instr (InterpreterState-current-instruction state))
+           (node (instr-comment-get instr 'node))
+           (src (node-source node))
+           (loc (and src (source-locat src)))
+           (filename
+            (if (and loc (string? (vector-ref loc 0)))
+                (vector-ref loc 0)
+                "<no filename>"))
+           (line
+              (if (and loc (string? (vector-ref loc 0)))
+                  (+ (**filepos-line (vector-ref loc 1)) 1)
+                  0)))
+      (display-error "in ")
+      (display-error filename)
+      (display-error "@")
+      (display-error line)
+      (display-error "\n"))
+    (display-error "\nBasic Block:\n")
+    (set! show-frame? #t)
+    (write-bb bb (current-error-port))
+    (display-error "\n")
+    (display-error "\nInterpreter state:\n")
+    (InterpreterState-##gvm-interpreter-debug state #t)
+    (InterpreterState-debug-log state)
     (for-each (lambda (s) (display-error " ") (display-error s)) messages)
     (display-error "\n")
     (error 1)))
