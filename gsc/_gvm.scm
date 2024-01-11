@@ -5522,7 +5522,12 @@
   (define bb (InterpreterState-bb state))
   (define (is-value? x) (lambda (y) (eq? x y)))
 
-  (define (interpret-procedure? x) (or (proc-obj? x) (Closure? x)))
+  (define (interpret-procedure? x)
+    (or (proc-obj? x)
+        (Closure? x)
+        (and (Label? x)
+             (eq? (bb-label-kind (lbl-num->bb (Label-id x) (Label-bbs x)))
+                  'entry))))
   (define (interpret-vector? x) (and (vector? x) (not (proc-obj? x))))
 
   (define bits-to-checker
