@@ -5745,20 +5745,22 @@
 
 (define (InterpreterState-stack state) (RTE-stack (InterpreterState-rte state)))
 
-(define gvm-interpreter-debug-proc-obj
-  (make-proc-obj ;; I don't know what these do, but they are not used anyway
-    "##gvm-interpreter-debug"
-    #f
-    #t ;; is a primitive
-    #f
-    #f
-    #t
-    #f
-    #f
-    '()
-    '(#f)))
-
 (define (init-interpreter-state module-procs)
+  (define (add-global-primitive rte name)
+    (define prim-proc-obj
+      (make-proc-obj ;; I don't know what these do, but they are not used anyway
+        (symbol->string name)
+        #f
+        #t ;; is a primitive
+        #f
+        #f
+        #t
+        #f
+        #f
+        '()
+        '(#f)))
+    (RTE-global-set! rte name prim-proc-obj))
+
   (let* ((main-proc (car module-procs))
          (main-bbs (proc-obj-code main-proc))
          (entry-lbl-num (bbs-entry-lbl-num main-bbs))
@@ -5784,10 +5786,12 @@
     (for-each (lambda (proc) (InterpreterState-register-bbs-name! state proc)) module-procs)
     ;; add sentinel that acts as program exit return address
     (RTE-registers-set! rte 0 exit-return-address)
-    ;; Add a debug procedure in the global environment
-    (RTE-global-set! rte
-                     '##gvm-interpreter-debug
-                     gvm-interpreter-debug-proc-obj)
+    ;; Add some primitive to the global environment
+    ;; When executed these will be looked up by name in the jumpable primitive table
+    ;; or with eval
+    (add-global-primitive rte '##gvm-interpreter-debug)
+    (add-global-primitive rte '##fixnum->string)
+  
     state))
 
 (define (InterpreterState-raise-error state . messages)
@@ -6336,7 +6340,10 @@
 (define (RTE-registers-set! rte i v) (stretchable-vector-set! (RTE-registers rte) i v))
 (define (RTE-frame-ref rte i) (Stack-frame-ref (RTE-stack rte) i))
 (define (RTE-frame-set! rte i v) (Stack-frame-set! (RTE-stack rte) i v))
-(define (RTE-global-ref rte name) (table-ref (RTE-global-env rte) name))
+(define (RTE-global-ref rte name)
+  (let* ((sentinel (gensym))
+         (g (table-ref (RTE-global-env rte) name sentinel)))
+    (if (eq? g sentinel) (table-ref (make-prim-proc-table) (symbol->string name)) g)))
 (define (RTE-global-set! rte name v) (table-set! (RTE-global-env rte) name v))
   
 (define (RTE-param-set! rte nparams i param)
