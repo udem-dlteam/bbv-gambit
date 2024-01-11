@@ -6102,11 +6102,20 @@
       (else
         (InterpreterState-goto state bbs (ifjump-false instr) fs)))))
 
+(define (string->short-string s)
+  (define add-break?
+    (and (> (string-length s) 0)
+         (char=? (string-ref s (- (string-length s) 1)) #\newline)))
+
+  (if (> (string-length s) 80)
+            (string-append (substring s 0 80) (if add-break? "...\n" "..."))
+            s))
+
 (define (gvm-interpreter-obj->string state o)
   ;; use display with output port to handle cyclic structures
   (define (obj->string-safe o)
     (define output-port (open-output-string))
-    (display o output-port)
+    (write o output-port)
     (get-output-string output-port))
 
   (define (tag t . names)
@@ -6117,31 +6126,27 @@
               '(">>"))))
     (apply string-append elements)))
 
-  (cond
-    ((proc-obj? o)
-      (tag "procedure" (proc-obj-name o)))
-    ((Label? o)
-      (let* ((lbl-bbs (Label-bbs o))
-             (name (InterpreterState-get-bbs-name state lbl-bbs)))
-        (tag "label"
-             (or name "?")
-             (string-append "#" (number->string (Label-id o))))))
-    ((Closure? o)
-      (let* ((clo-lbl (Closure-ref o 0))
-             (clo-bbs (Label-bbs clo-lbl))
-             (name (InterpreterState-get-bbs-name state clo-bbs)))
-        (tag "closure" (or name "?"))))
-    ((eq? o empty-stack-slot)
-      ".")
-    ((symbol? o)
-      (string-append "'" (symbol->string o)))
-    ((string? o)
-      (string-append "\"" o "\""))
-    (else
-      (let ((s (obj->string-safe o)))
-        (if (> (string-length s) 80)
-            (string-append (substring s 0 80) "...")
-            s)))))
+  (string->short-string
+    (cond
+      ((proc-obj? o)
+        (tag "procedure" (proc-obj-name o)))
+      ((Label? o)
+        (let* ((lbl-bbs (Label-bbs o))
+              (name (InterpreterState-get-bbs-name state lbl-bbs)))
+          (tag "label"
+              (or name "?")
+              (string-append "#" (number->string (Label-id o))))))
+      ((Closure? o)
+        (let* ((clo-lbl (Closure-ref o 0))
+              (clo-bbs (Label-bbs clo-lbl))
+              (name (InterpreterState-get-bbs-name state clo-bbs)))
+          (tag "closure" (or name "?"))))
+      ((eq? o empty-stack-slot)
+        ".")
+      ((symbol? o)
+        (string-append "'" (symbol->string o)))
+      (else
+        (obj->string-safe o)))))
 
 (define (InterpreterState-debug-on! state)
   (InterpreterState-debug-state-set! state #t))
@@ -6206,7 +6211,9 @@
         (iota (max entry-fs (+ nargs shift-left shift-right exit-fs)) (- 1 shift-left)))
       (println "  Instruction:")
       (print "    ")
-      (write-gvm-instr (InterpreterState-current-instruction state) (current-output-port))
+      (let ((port (open-output-string)))
+        (write-gvm-instr (InterpreterState-current-instruction state) port)
+        (display (string->short-string (get-output-string port))))
       (println)
       (println "---"))))
 
@@ -6274,20 +6281,34 @@
   (register!
     '("##apply" "apply")
     (lambda (state args ret-label)
-      (let* ((fs (bb-entry-frame-size (InterpreterState-bb state)))
-             (rte (InterpreterState-rte state))
+      (let* ((rte (InterpreterState-rte state))
              (stack (RTE-stack rte))
-             (proc (car args))
-             (proc-args (apply apply list (cdr args)))
-             (nargs (length proc-args))
-             (new-exit-fs (+ fs (nb-args-on-stack nargs)))
+             (nargs (length args))
+             (procedure (car args))
+             (apply-args (cdr args))
+             (positionals
+              (let loop ((a apply-args))
+                (if (pair? (cdr a)) (cons (car a) (loop (cdr a))) (car a))))
+             (rest (last apply-args))
+             (all-args (append positionals rest))
+             ;; apply is called with (apply proc pos1 pos2 ... posN rest)
+             ;; we remove the procedure from the frame -1
+             ;; we shift the positional arguments but leave them in the frame
+             ;; we remove the rest argument -1
+             ;; we unpack the rest argument + (length rest)
+             ;; total = (length rest) - 2
+             (extra-nargs (- (length rest) 2))
+             (extra-fs (- (nb-args-on-stack (+ nargs extra-nargs))
+                          (nb-args-on-stack nargs)))
+             (fs (bb-exit-frame-size (InterpreterState-bb state)))
+             (new-exit-fs (+ fs extra-fs))
              (opnds (InterpreterState-get-args-positions state nargs new-exit-fs)))
 
         ;; Add apply arguments to frame
-        (for-each (lambda (loc arg) (RTE-set! rte loc arg)) opnds proc-args)
+        (for-each (lambda (loc arg) (RTE-set! rte loc arg)) opnds all-args)
 
         ;; jump with new frame size
-        (InterpreterState-jump state proc nargs new-exit-fs ret-label))))
+        (InterpreterState-jump state procedure nargs new-exit-fs ret-label))))
 
   (add-primitive-counter-to-primitives-table! primitives-table)
   primitives-table)
