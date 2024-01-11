@@ -5674,8 +5674,7 @@
 
   (define (throw-error slot-num value expected)
     (InterpreterState-raise-error state
-                                  "GVM type error: in bb"
-                                  (bb-lbl-num bb)
+                                  "GVM type error: "
                                   slot-num
                                   "has value"
                                   (gvm-interpreter-obj->string state value)
