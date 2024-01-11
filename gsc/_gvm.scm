@@ -5727,10 +5727,10 @@
 
 (define-type InterpreterState
   ;; execution state
-  rte
-  procedures
-  bbs
-  bb
+  (rte unprintable:)
+  (procedures unprintable:)
+  (bbs unprintable:)
+  (bb unprintable:)
   instr-index
   done?
   ;; traces
@@ -5739,8 +5739,8 @@
   debug-shift-left
   debug-shift-right
   debug-predicate
-  primitive-counter
-  bbs-names)
+  (primitive-counter unprintable:)
+  (bbs-names unprintable:))
 
 (define (InterpreterState-stack state) (RTE-stack (InterpreterState-rte state)))
 
@@ -6119,21 +6119,26 @@
       (else
         (InterpreterState-goto state bbs (ifjump-false instr) fs)))))
 
+(define short-string-max-length 80)
+
 (define (string->short-string s)
   (define add-break?
     (and (> (string-length s) 0)
          (char=? (string-ref s (- (string-length s) 1)) #\newline)))
 
-  (if (> (string-length s) 80)
-            (string-append (substring s 0 80) (if add-break? "...\n" "..."))
+  (if (> (string-length s) short-string-max-length)
+            (string-append (substring s 0 short-string-max-length) (if add-break? "...\n" "..."))
             s))
 
 (define (gvm-interpreter-obj->string state o)
   ;; use display with output port to handle cyclic structures
-  (define (obj->string-safe o)
-    (define output-port (open-output-string))
-    (write o output-port)
-    (get-output-string output-port))
+  (define (obj->string-safe obj)
+    (call-with-output-string
+      (lambda (p)
+        (output-port-readtable-set!
+          p
+          (readtable-max-write-length-set (output-port-readtable p) (- short-string-max-length 10)))
+        (write obj p))))
 
   (define (tag t . names)
     (let ((elements
@@ -6260,11 +6265,11 @@
 
 (define-type RTE
   ;; run time environment
-  registers
-  stack
-  global-env
-  jumpable-primitives
-  state)
+  (registers unprintable:)
+  (stack unprintable:)
+  (global-env unprintable:)
+  (jumpable-primitives unprintable:)
+  (state unprintable:))
 
 (define (InterpreterState-##gvm-interpreter-debug state #!optional (arg 1)
                                                         #!key (tag #f)
@@ -6378,7 +6383,7 @@
 (define-type Stack
   frame-pointer
   stack-pointer
-  content)
+  (content unprintable:))
 
 (define (Stack-ref s i) (stretchable-vector-ref (Stack-content s) i))
 (define (Stack-set! s i v) (stretchable-vector-set! (Stack-content s) i v))
@@ -6408,14 +6413,14 @@
 ;; Object model
 
 (define-type Label
-  bbs
+  (bbs unprintable:)
   id)
 
 (define (has-type-return? value)
   (or (Label? value) (eq? value exit-return-address)))
 
 (define-type Closure
-  slots) ;; slot 0 is label so ##closure-ref works
+  (slots unprintable:)) ;; slot 0 is label so ##closure-ref works
 
 (define (Closure-ref clo i) (vector-ref (Closure-slots clo) i))
 (define (Closure-set! clo i val) (vector-set! (Closure-slots clo) i val))
