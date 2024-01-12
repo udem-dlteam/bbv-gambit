@@ -5798,6 +5798,7 @@
     ;; or with eval
     (add-global-primitive rte '##gvm-interpreter-debug)
     (add-global-primitive rte '##fixnum->string)
+    (add-global-primitive rte 'command-line)
   
     state))
 
@@ -6358,6 +6359,13 @@
                  (if (pair? (cdr a)) (cons (car a) (loop (cdr a))) (car a)))))
         (InterpreterState-push-args! state positionals)
         (InterpreterState-jump state procedure (length positionals) #f ret-label))))
+
+  (register!
+    "command-line"
+    (lambda (state nargs ret-label)
+      (InterpreterState-pop-args! state nargs)
+      (InterpreterState-set! state backend-return-result-location (list ""))
+      (InterpreterState-jump state ret-label #f #f ret-label)))
 
   (add-primitive-counter-to-primitives-table! primitives-table)
   primitives-table)
