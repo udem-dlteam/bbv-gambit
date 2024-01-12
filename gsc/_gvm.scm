@@ -5517,7 +5517,7 @@
             (iota n-slots (+ locenv-start-regs (* 2 n-registers) 1) 2))))))
 
 (define (assert-types state instr)
-  (define assert? #t)
+  (define assert? (InterpreterState-assert-types? state))
   (define tctx (make-tctx))
   (define rte (InterpreterState-rte state))
   (define bb (InterpreterState-bb state))
@@ -5745,6 +5745,7 @@
   debug-shift-left
   debug-shift-right
   debug-predicate
+  assert-types?
   (primitive-counter unprintable:)
   (bbs-names unprintable:))
 
@@ -5782,6 +5783,7 @@
             0                                        ;; debug-shift-left
             0                                        ;; debug-shift-right
             #f                                       ;; debug-predicate
+            #f                                       ;; assert-types?
             (make-table)                             ;; primitive counter
             (make-table test: eq? weak-keys: #t)))   ;; bbs-names
          (rte (InterpreterState-rte state)))
