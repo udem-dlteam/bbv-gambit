@@ -7651,7 +7651,7 @@
 
 (define (make-type-top-with-new-length-bound #!optional (token #f) (limit #f))
   (define default-limit 100)
-  (define default-global-limit 1000)
+  (define default-global-limit 50000)
   (let ((limit (cond (limit limit) ;; use limit if provided
                      (token default-limit) ;; use default limit if loc is provided
                      (else default-global-limit))));; else use the global limit shared between all other sites
