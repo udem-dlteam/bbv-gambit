@@ -3451,9 +3451,10 @@
 (define (locenv-eqv? locenv1 locenv2)
   (if (and (= (vector-length locenv1) (vector-length locenv2))
            (equal? (vector-ref locenv1 0) (vector-ref locenv2 0))) ;; compare register/stack size
-      (let loop ((i 2))
+      (let loop ((i 1))
         (if (< i (vector-length locenv1))
-            (and (type-eqv? (vector-ref locenv1 i) (vector-ref locenv2 i))
+            (and (= (locenv-ec locenv1 i) (locenv-ec locenv2 i))
+                 (type-eqv? (vector-ref locenv1 (+ i 1)) (vector-ref locenv2 (+ i 1)))
                  (loop (+ i 2)))
             #t))))
 
@@ -3672,6 +3673,21 @@
                  (union type (vector-ref other-locenv (+ j 1)))))
             (loop (+ i locenv-entry-size)))
           new-locenv))))
+
+(define (locenv-ec locenv loc)
+
+  ;; This procedure returns the identifier of the equivalence class
+  ;; of loc (which is the loc in the same equivalence class with
+  ;; the smallest index).
+
+  (let ((ec (vector-ref locenv loc)))
+    (if (= ec loc) ;; in its own equivalence class?
+        ec
+        (let loop ((curr ec) (ec loc))
+          (let ((min-ec (min curr ec)))
+            (if (= curr loc)
+                min-ec
+                (loop (vector-ref locenv curr) min-ec)))))))
 
 (define (locenv-ec-detach locenv loc)
 
