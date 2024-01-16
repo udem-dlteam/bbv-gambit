@@ -2528,7 +2528,13 @@
                (bb (lbl-num->bb lbl bbs))
                (label (bb-label-instr bb))
                (frame (gvm-instr-frame label))
-               (types-before (resized-frame-types-remove-dead frame types-before))
+               (types-before
+                (if (and (eq? (label-kind label) 'entry)
+                         (or (pair? (label-entry-keys label)) ;; label with "complex" parameter handling?
+                             (pair? (label-entry-opts label))
+                             (label-entry-rest? label)))
+                    (generic-entry-frame-types frame)
+                    (resized-frame-types-remove-dead frame types-before)))
                (bb-versions (or (table-ref versions lbl #f)
                                 (let ((bb-versions
                                        (if track-version-history?
