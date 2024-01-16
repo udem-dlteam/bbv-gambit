@@ -2586,9 +2586,15 @@
                             (types-merge-multi
                              (map car versions-to-merge)
                              #t))
+                           (existing-lbl-of-merged-type (table-ref all-versions-tbl merged-types #f))
                            (new-lbl2
-                            (or (replacement-lbl-num (table-ref all-versions-tbl merged-types #f))
-                                (new-lbl! lbl))))
+                            (or (and existing-lbl-of-merged-type
+                                     (replacement-lbl-num existing-lbl-of-merged-type))
+                                (new-lbl! lbl)))
+                           (merged-types
+                            (if (not existing-lbl-of-merged-type)
+                                merged-types
+                                (get-version-types new-lbl2))))
 
                       (set! debug-merged-types merged-types)
 
@@ -3850,8 +3856,8 @@
 (define show-frame-padding? #f)
 (set! show-frame-padding? #f)
 
-(define show-frame? #f)
-(set! show-frame? #f)
+(define show-frame? #t)
+(set! show-frame? #t)
 
 (define show-source-location? #f)
 (set! show-source-location? #f)
@@ -6000,7 +6006,7 @@
                (jumpable (InterpreterState-jumpable-primitive? state name)))
           (if exit-fs (Stack-frame-exit! stack exit-fs))
           (if jumpable
-            (jumpable state nargs ret-label)
+            (jumpable state nargs (or ret-label (InterpreterState-ref state backend-return-label-location)))
             (let ((args (InterpreterState-pop-args! state nargs)))
               (InterpreterState-set! state backend-return-result-location
                                     (InterpreterState-apply-inlinable-primitive state name args))
