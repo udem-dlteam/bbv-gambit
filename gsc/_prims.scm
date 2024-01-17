@@ -7146,6 +7146,13 @@
     (let ((arg (car args)))
       (type-narrow-type-test2 tctx type-string string? arg))))
 
+(type-narrow-set!
+ "##string-in-bounds?"
+ (lambda (tctx args)
+   (let ((arg1 (car args))
+         (arg2 (cadr args)))
+     (type-narrow-in-bounds-test tctx arg1 arg2))))
+
 (def-type-narrow "vector?"
   (lambda (tctx args)
     (let ((arg (car args)))
