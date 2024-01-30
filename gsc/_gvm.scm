@@ -2160,7 +2160,7 @@
      (let* ((label (bb-label-instr bb))
             (doms
              (map (lambda (lbl)
-                    (string-append " " (format-gvm-lbl lbl)))
+                    (string-append " " (format-gvm-lbl lbl '())))
                   (instr-comment-get label 'doms))))
        (if (pair? doms)
            (instr-comment-add!
@@ -2399,9 +2399,7 @@
                          r))
                      (vector-ref bb-versions 0)))
                   (if changed?
-                      (let ((info
-                             (string-append " " (format-gvm-lbl cause-lbl))))
-                        (track-version-history orig-lbl 'gc info))) ;; track history of versions
+                      (track-version-history orig-lbl cause-lbl 'gc)) ;; track history of versions
                   ;; add back newly reachable versions to be processed
                   (for-each
                     (lambda (types-lbl)
@@ -2447,7 +2445,7 @@
       (define (set-version-types! lbl types)
         (table-set! version-types-table lbl types))
 
-      (define (track-version-history lbl operation gc-info) ;; track history of versions
+      (define (track-version-history lbl from-lbl operation) ;; track history of versions
         (if track-version-history?
             (let* ((bb (lbl-num->bb lbl bbs))
                    (label (bb-label-instr bb))
@@ -2456,7 +2454,7 @@
                    (types-lbl-alist (vector-ref bb-versions 0))
                    (text-grid (vector-ref bb-versions 2))
                    (version-index-tbl (vector-ref bb-versions 3))
-                   (options '(brief))
+                   (options '(brief new))
                    (col (max 1 (text-grid-cols text-grid))))
 
               (if (memq operation '(add merge))
@@ -2469,10 +2467,24 @@
                           (text-grid-set! text-grid
                            (+ index 2)
                            0
-                           (format-gvm-lbl new-lbl))
+                           (string-append
+                            (format-gvm-lbl new-lbl '(new))
+                            (if from-lbl
+                                (string-append
+                                 "<-"
+                                 (format-gvm-lbl from-lbl '(new)))
+                                "")))
                           index))))
 
-              (let ((header (format-frame frame #f 'header options)))
+              (let ((header (format-frame frame #f 'header options))
+                    (info
+                     (if from-lbl
+                         (string-append
+                          (if (memq operation '(add merge))
+                              " <-"
+                              " ")
+                          (format-gvm-lbl from-lbl '(new)))
+                         "")))
 
                 (text-grid-set!
                  text-grid
@@ -2486,19 +2498,25 @@
                     text-grid
                     0
                     (+ col 1)
-                    (list 'span (length header) "ADD")))
+                    (list 'span
+                          (length header)
+                          (string-append "ADD" info))))
                   ((merge)
                    (text-grid-set!
                     text-grid
                     0
                     (+ col 1)
-                    (list 'span (length header) "MERGE")))
+                    (list 'span
+                          (length header)
+                          (string-append "MERGE" info))))
                   ((gc)
                    (text-grid-set!
                     text-grid
                     0
                     (+ col 1)
-                    (list 'span (length header) "GC" gc-info))))
+                    (list 'span
+                          (length header)
+                          (string-append "GC" info)))))
 
                 (text-grid-set!
                  text-grid
@@ -2521,7 +2539,7 @@
                    (text-grid-line-set! text-grid (+ i 2) (+ col 1) typs)))
                types-lbl-alist))))
 
-      (define (reach lbl bbvctx)
+      (define (reach lbl from-lbl bbvctx)
         (let* ((types-before (bbvctx-types bbvctx))
                (cost (bbvctx-cost bbvctx))
                (path (bbvctx-path bbvctx))
@@ -2624,7 +2642,7 @@
                        (cons (cons merged-types new-lbl2)
                              versions-to-keep))
 
-                      (track-version-history lbl 'merge #f) ;; track history of versions
+                      (track-version-history lbl from-lbl 'merge) ;; track history of versions
 
                       (if (memv 0 out) ;; Only update label and types if the original version was merged!!!!!!
                           (queue-put! ;; schedule walk of the bb created by merge
@@ -2642,7 +2660,7 @@
 
                 (vector-set! bb-versions 0 new-types-lbl-alist)
 
-                (track-version-history lbl 'add #f) ;; track history of versions
+                (track-version-history lbl from-lbl 'add) ;; track history of versions
 
                 (if (> (length new-types-lbl-alist)
                        (max 1 (bb-version-limit bb)))
@@ -2668,26 +2686,28 @@
         (let ((new-bb #f))
 
           (define show #t)
-          (define (reach* lbl types-after cost path)
+          (define (reach* lbl from-lbl types-after cost path)
             (if (and debug-bbv? show)
                 (begin
-                  (write-bb new-bb (current-output-port))
+                  (write-bb new-bb '(new) (current-output-port))
                   (print "...\n")
                   (set! show #f)))
             (reach lbl
+                   from-lbl
                    (make-bbvctx
                     (let ((dest-fs (bb-entry-frame-size (lbl-num->bb lbl bbs))))
                       (types-keep-topmost-slots types-after dest-fs))
                     cost
                     path)))
 
-        (define (reach-ret* lbl types-after cost path)
+        (define (reach-ret* lbl from-lbl types-after cost path)
             (if (and debug-bbv? show)
                 (begin
-                  (write-bb new-bb (current-output-port))
+                  (write-bb new-bb '(new) (current-output-port))
                   (print "...\n")
                   (set! show #f)))
             (reach lbl
+                   from-lbl
                    (make-bbvctx
                     (let* ((bb (lbl-num->bb lbl bbs))
                            (label (bb-label-instr bb))
@@ -2707,7 +2727,7 @@
                            (bb-label-instr bb))
                           (types-bef
                            (generic-entry-frame-types (gvm-instr-frame label))))
-                     (make-lbl (reach* lbl types-bef cost path)))
+                     (make-lbl (reach* lbl #f types-bef cost path)))
                    gvm-opnd)))
 
         (define (walk-loc gvm-opnd)
@@ -2968,7 +2988,7 @@
                                            types-entry))))
                                (make-closure-parms
                                 (closure-parms-loc parms)
-                                (reach* lbl types-entry 0 '())
+                                (reach* lbl #f types-entry 0 '())
                                 new-opnds))
                              rev-parms))
                            (let ((new-instr
@@ -3014,6 +3034,7 @@
                                     (true-lbl
                                      (and true-types
                                           (reach* (ifjump-true gvm-instr)
+                                                  new-lbl
                                                   true-types
                                                   cost
                                                   path)))
@@ -3022,6 +3043,7 @@
                                     (false-lbl
                                      (and false-types
                                           (reach* (ifjump-false gvm-instr)
+                                                  new-lbl
                                                   false-types
                                                   cost
                                                   path))))
@@ -3057,10 +3079,12 @@
                             test
                             new-opnds
                             (reach* (ifjump-true gvm-instr)
+                                    new-lbl
                                     types-after
                                     cost
                                     path)
                             (reach* (ifjump-false gvm-instr)
+                                    new-lbl
                                     types-after
                                     cost
                                     path)
@@ -3102,6 +3126,7 @@
                       (new-ret
                        (and ret
                             (reach-ret* ret
+                                        new-lbl
                                         types-return
                                         (+ (- cost instr-cost) call-cost)
                                         path))) ;;;;;;;;;TODO
@@ -3130,6 +3155,7 @@
                                                                    type2))
                                                    types-after)))
                                          (make-lbl (reach* lbl
+                                                           new-lbl
                                                            merged-types
                                                            cost
                                                            path)))
@@ -3137,6 +3163,7 @@
                                  opnd))
                            (if (lbl? opnd)
                                (make-lbl (reach* (lbl-num opnd)
+                                                 new-lbl
                                                  types-after
                                                  cost
                                                  path))
@@ -3169,9 +3196,9 @@
              'cfg-bb-info
              (list
               (cons 'info
-                    (string-append (format-gvm-lbl orig-lbl)
+                    (string-append (format-gvm-lbl orig-lbl '())
                                    "->"
-                                   (format-gvm-lbl new-lbl))))))
+                                   (format-gvm-lbl new-lbl '(new)))))))
 
           (let loop ((instrs
                       (bb-non-branch-instrs bb))
@@ -3198,7 +3225,7 @@
 
         (queue-put!
           work-queue
-          (lambda () (bbs-entry-lbl-num-set! new-bbs (reach entry-lbl (make-bbvctx types-before 0 '())))))
+          (lambda () (bbs-entry-lbl-num-set! new-bbs (reach entry-lbl #f (make-bbvctx types-before 0 '())))))
 
         (let loop ()
           (if (not (queue-empty? work-queue))
@@ -3223,7 +3250,7 @@
 
   (set! type-top-counter 0) ;; TODO: find a better place for this...
 
-;;  (write-bbs bbs (current-output-port))
+;;  (write-bbs bbs '() (current-output-port))
 
   (walk-bbs bbs)
 
@@ -3249,7 +3276,7 @@
                          (loop1 (+ col 1)))))
                  (text-grid-display text-grid port)
                  (newline port)
-                 (write-bb bb port)
+                 (write-bb bb '() port)
                  (newline port)))))
        bbs))
 
@@ -3830,31 +3857,31 @@
 ;; Basic block writing:
 ;; -------------------
 
-(define (write-bb bb port)
-  (write-gvm-instr (bb-label-instr bb) port bb)
+(define (write-bb bb options port)
+  (write-gvm-instr (bb-label-instr bb) options port bb)
   (newline port)
 
   (for-each (lambda (gvm-instr)
               (if (useful-gvm-instr? gvm-instr)
                   (begin
-                    (write-gvm-instr gvm-instr port)
+                    (write-gvm-instr gvm-instr options port)
                     (newline port))))
             (bb-non-branch-instrs bb))
 
   (if (not (null? (bb-branch-instr bb)))
-      (write-gvm-instr (bb-branch-instr bb) port)))
+      (write-gvm-instr (bb-branch-instr bb) options port)))
 
 (define (useful-gvm-instr? gvm-instr)
   (or show-frame-padding?
       (not (and (eq? (gvm-instr-kind gvm-instr) 'copy)
                 (not (copy-opnd gvm-instr))))))
 
-(define (write-bbs bbs port)
+(define (write-bbs bbs options port)
   (bbs-for-each-bb
     (lambda (bb)
       (if (= (bb-lbl-num bb) (bbs-entry-lbl-num bbs))
         (begin (display "**** Entry block:" port) (newline port)))
-      (write-bb bb port)
+      (write-bb bb options port)
       (newline port))
     bbs))
 
@@ -3885,7 +3912,7 @@
                     (display (code-slots-needed code) port)
                     (display " | " port)))
 
-              (write-gvm-instr gvm-instr port (code-bb code))
+              (write-gvm-instr gvm-instr '() port (code-bb code))
               (newline port)))))
 
     (if (proc-obj-primitive? p)
@@ -3977,7 +4004,7 @@
         (proc-tbl (make-table)))
 
     (define (proc-repr proc)
-      (format-gvm-opnd (make-obj proc)))
+      (format-gvm-opnd (make-obj proc) '()))
 
     (define (proc-id proc proc-index)
       (bb-id (let ((x (proc-obj-code proc)))
@@ -4165,7 +4192,7 @@
 
           (define (format-instr gvm-instr)
             (cons gvm-instr
-                  (format-gvm-instr-code gvm-instr)))
+                  (format-gvm-instr-code gvm-instr '())))
 
           (define (format-length lst)
             (let loop ((lst lst) (len 0))
@@ -4191,12 +4218,16 @@
                                 (list
                                  (bb-branch-instr bb)))))
                  (code-rows
-                  (map format-gvm-instr-code gvm-instrs))
+                  (map (lambda (gvm-instr)
+                         (format-gvm-instr-code gvm-instr '()))
+                       gvm-instrs))
                  (rows
                   (if #f
                       (map list code-rows)
                       (let* ((frame-rows
-                              (map format-gvm-instr-frame gvm-instrs))
+                              (map (lambda (gvm-instr)
+                                     (format-gvm-instr-frame gvm-instr '()))
+                                   gvm-instrs))
                              (width-code
                               (max-format-length code-rows))
                              (width-frame
@@ -4624,7 +4655,7 @@
 ;; Virtual instruction writing:
 ;; ---------------------------
 
-(define (write-gvm-instr gvm-instr port . bb)
+(define (write-gvm-instr gvm-instr options port . bb)
 
   (define (spaces n)
     (if (> n 0)
@@ -4632,13 +4663,14 @@
         (begin (display "        " port) (spaces (- n 8)))
         (begin (display " " port) (spaces (- n 1))))))
 
-  (let ((str (format-concatenate
-              (apply format-gvm-instr-code (cons gvm-instr bb)))))
+  (let ((str
+         (format-concatenate
+          (apply format-gvm-instr-code (cons gvm-instr (cons options bb))))))
     (display str port)
     (spaces (- 43 (string-length str)))
     (display " " port)
     (if show-frame?
-        (write-gvm-instr-frame gvm-instr port)))
+        (write-gvm-instr-frame gvm-instr options port)))
 
 
   (let ((y (instr-comment-get gvm-instr 'text)))
@@ -4647,14 +4679,14 @@
         (display " ; " port)
         (display y port)))))
 
-(define (write-gvm-instr-frame gvm-instr port)
-  (display (format-concatenate (format-gvm-instr-frame gvm-instr))
+(define (write-gvm-instr-frame gvm-instr options port)
+  (display (format-concatenate (format-gvm-instr-frame gvm-instr options))
            port))
 
-(define (format-gvm-instr-frame gvm-instr)
+(define (format-gvm-instr-frame gvm-instr options)
   (let ((frame (gvm-instr-frame gvm-instr))
         (types (gvm-instr-types gvm-instr)))
-    (format-frame frame types 'combined '())))
+    (format-frame frame types 'combined options)))
 
 (define (write-frame frame types port)
   (display (format-concatenate (format-frame frame types 'combined '()))
@@ -4738,7 +4770,7 @@
                          (if (eq? style 'header)
                              `(,@(format-var
                                   var
-                                  `(,(format-gvm-opnd reg)
+                                  `(,(format-gvm-opnd reg options)
                                     "=")
                                   `())
                                ,@sep
@@ -4752,7 +4784,7 @@
                                         (or type `()))
                                        (format-var
                                         var
-                                        `(,(format-gvm-opnd reg)
+                                        `(,(format-gvm-opnd reg options)
                                           "=")
                                         (if type `("|" ,@type) `())))
                                  ,@sep
@@ -4956,13 +4988,13 @@
                   (newline port)
                   (loop4 (+ row 1)))))))))
 
-(define (format-gvm-instr-code gvm-instr . bb)
+(define (format-gvm-instr-code gvm-instr options . bb)
 
   (define (format-closure-parms parms)
     `(" "
-      ,(format-gvm-opnd (closure-parms-loc parms))
+      ,(format-gvm-opnd (closure-parms-loc parms) options)
       " = ("
-      ,(format-gvm-lbl (closure-parms-lbl parms))
+      ,(format-gvm-lbl (closure-parms-lbl parms) options)
       ,@(format-spaced-opnd-list (closure-parms-opnds parms))))
 
   (define (format-spaced-opnd-list lst)
@@ -4970,14 +5002,14 @@
                (rev-result '()))
       (if (pair? lst)
           (loop (cdr lst)
-                `(,(format-gvm-opnd (car lst))
+                `(,(format-gvm-opnd (car lst) options)
                   " "
                   ,@rev-result))
           (reverse `(")" ,@rev-result)))))
 
   (define (format-opnd-list lst)
     (if (pair? lst)
-        `(,(format-gvm-opnd (car lst))
+        `(,(format-gvm-opnd (car lst) options)
           ,@(format-spaced-opnd-list (cdr lst)))
         (format-spaced-opnd-list lst)))
 
@@ -4992,7 +5024,7 @@
                          (rest (cdr lst)))
                     `(,(string-append "(" (object->string key))
                       " "
-                      ,(format-gvm-opnd opnd)
+                      ,(format-gvm-opnd opnd options)
                       ")"
                       ,@(if (pair? rest)
                             `(" "
@@ -5013,14 +5045,14 @@
 
   (define (format-prim-applic prim opnds)
     (if (eq? prim **identity-proc-obj)
-        `(,(format-gvm-opnd (car opnds)))
+        `(,(format-gvm-opnd (car opnds) options))
         (cons (string-append "(" (proc-obj-name prim))
               (format-spaced-opnd-list opnds))))
 
   (case (gvm-instr-kind gvm-instr)
 
     ((label)
-     `(,(format-gvm-lbl (label-lbl-num gvm-instr))
+     `(,(format-gvm-lbl (label-lbl-num gvm-instr) options)
        " fs="
        ,(number->string (frame-size (gvm-instr-frame gvm-instr)))
        ,@(case (label-kind gvm-instr)
@@ -5031,7 +5063,7 @@
                         (apply
                          append
                          (map (lambda (i)
-                                (list " " (format-gvm-lbl i)))
+                                (list " " (format-gvm-lbl i options)))
                               precedents)))
                   '())))
            ((entry)
@@ -5051,16 +5083,16 @@
 
     ((apply)
      `("  "
-       ,(format-gvm-opnd (apply-loc gvm-instr))
+       ,(format-gvm-opnd (apply-loc gvm-instr) options)
        " = "
        ,@(format-prim-applic (apply-prim gvm-instr)
                              (apply-opnds gvm-instr))))
 
     ((copy)
      `("  "
-       ,(format-gvm-opnd (copy-loc gvm-instr))
+       ,(format-gvm-opnd (copy-loc gvm-instr) options)
        " = "
-       ,(format-gvm-opnd (copy-opnd gvm-instr))))
+       ,(format-gvm-opnd (copy-opnd gvm-instr) options)))
 
     ((close)
      (let loop ((lst (close-parms gvm-instr))
@@ -5083,10 +5115,10 @@
        ,(number->string (frame-size (gvm-instr-frame gvm-instr)))
        " "
        "" ;; tag as a branch destination
-       ,(format-gvm-lbl (ifjump-true gvm-instr))
+       ,(format-gvm-lbl (ifjump-true gvm-instr) options)
        " else "
        "" ;; tag as a branch destination
-       ,(format-gvm-lbl (ifjump-false gvm-instr))))
+       ,(format-gvm-lbl (ifjump-false gvm-instr) options)))
 
     ((switch)
      `("  "
@@ -5096,7 +5128,7 @@
        " fs="
        ,(number->string (frame-size (gvm-instr-frame gvm-instr)))
        " "
-       ,(format-gvm-opnd (switch-opnd gvm-instr))
+       ,(format-gvm-opnd (switch-opnd gvm-instr) options)
        " ("
        ,@(let loop ((cases (switch-cases gvm-instr)))
            (if (pair? cases)
@@ -5105,7 +5137,7 @@
                  `(,(format-gvm-obj (switch-case-obj c) #f)
                    " => "
                    "" ;; tag as a branch destination
-                   ,(format-gvm-lbl (switch-case-lbl c))
+                   ,(format-gvm-lbl (switch-case-lbl c) options)
                    ,@(if (null? next)
                          '()
                          `(", "
@@ -5113,7 +5145,7 @@
                '()))
        ") "
        "" ;; tag as a branch destination
-       ,(format-gvm-lbl (switch-default gvm-instr))))
+       ,(format-gvm-lbl (switch-default gvm-instr) options)))
 
     ((jump)
      `("  "
@@ -5124,12 +5156,12 @@
        ,(number->string (frame-size (gvm-instr-frame gvm-instr)))
        " "
        "" ;; tag as a branch destination
-       ,(format-gvm-opnd (jump-opnd gvm-instr))
+       ,(format-gvm-opnd (jump-opnd gvm-instr) options)
        ,@(if (jump-ret gvm-instr)
              `(" "
-               ,(format-gvm-opnd return-addr-reg)
+               ,(format-gvm-opnd return-addr-reg options)
                "="
-               ,(format-gvm-opnd (make-lbl (jump-ret gvm-instr))))
+               ,(format-gvm-opnd (make-lbl (jump-ret gvm-instr)) options))
              '())
        ,@(if (jump-nb-args gvm-instr)
              `(" nargs="
@@ -5146,12 +5178,12 @@
 ;; Operand writing:
 ;; ---------------
 
-(define (write-gvm-opnd gvm-opnd port)
-  (let ((str (format-gvm-opnd gvm-opnd)))
+(define (write-gvm-opnd gvm-opnd options port)
+  (let ((str (format-gvm-opnd gvm-opnd options)))
     (display str port)
     (string-length str)))
 
-(define (format-gvm-opnd gvm-opnd)
+(define (format-gvm-opnd gvm-opnd options)
   (cond ((not gvm-opnd)
          ".")
         ((reg? gvm-opnd)
@@ -5161,12 +5193,12 @@
         ((glo? gvm-opnd)
          (string-append "global[" (object->string (glo-name gvm-opnd)) "]"))
         ((clo? gvm-opnd)
-         (string-append (format-gvm-opnd (clo-base gvm-opnd))
+         (string-append (format-gvm-opnd (clo-base gvm-opnd) options)
                         "["
                         (number->string (clo-index gvm-opnd))
                         "]"))
         ((lbl? gvm-opnd)
-         (format-gvm-lbl (lbl-num gvm-opnd)))
+         (format-gvm-lbl (lbl-num gvm-opnd) options))
         ((obj? gvm-opnd)
          (format-gvm-obj (obj-val gvm-opnd) #t))
         (else
@@ -5174,8 +5206,8 @@
            "format-gvm-opnd, unknown 'gvm-opnd':"
            gvm-opnd))))
 
-(define (format-gvm-lbl lbl)
-  (string-append "#" (number->string lbl)))
+(define (format-gvm-lbl lbl options)
+  (string-append (if (memq 'new options) "%" "#") (number->string lbl)))
 
 (define (format-gvm-obj val quote?)
   (let ((str
@@ -5187,9 +5219,9 @@
                  (proc-obj-name val)
                  ">"))
                ((lbl-obj? val)
-                (string-append (format-gvm-lbl (lbl-obj-lbl val))
+                (string-append (format-gvm-lbl (lbl-obj-lbl val) '())
                                "->"
-                               (format-gvm-lbl (lbl-obj-new-lbl val))))
+                               (format-gvm-lbl (lbl-obj-new-lbl val) '(new))))
                (else
                 (object->string val)))))
     (if (or (not quote?)
@@ -5863,7 +5895,7 @@
       (display-error "\n"))
     (display-error "\nBasic Block:\n")
     (set! show-frame? #t)
-    (write-bb bb (current-error-port))
+    (write-bb bb '() (current-error-port))
     (display-error "\n")
     (display-error "\nInterpreter state:\n")
     (InterpreterState-##gvm-interpreter-debug state #t)
@@ -6301,7 +6333,7 @@
       (println "  Instruction:")
       (print "    ")
       (let ((port (open-output-string)))
-        (write-gvm-instr (InterpreterState-current-instruction state) port)
+        (write-gvm-instr (InterpreterState-current-instruction state) '() port)
         (display (string->short-string (get-output-string port))))
       (println)
       (println "---"))))

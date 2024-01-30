@@ -3222,8 +3222,8 @@
                         (##namespace ("" with-output-to-string pp))
                         (pp (list (parse-tree->expression node)
                                   (map var-name (varset->list live))
-                                  (with-output-to-string "" (lambda () (write-gvm-opnd loc (current-output-port))))
-                                  (with-output-to-string "" (lambda () (write-gvm-opnd (lowest-dead-reg live) (current-output-port))))
+                                  (with-output-to-string "" (lambda () (write-gvm-opnd loc '() (current-output-port))))
+                                  (with-output-to-string "" (lambda () (write-gvm-opnd (lowest-dead-reg live) '() (current-output-port))))
                                   regs:
                                   (map (lambda (x) (if (var? x) (var-name x) x)) regs)
                                   slots:
