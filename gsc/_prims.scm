@@ -8321,6 +8321,7 @@
 (define use-directional-widening? #f)
 (define widening-speed 1) ;; 0..2 (0 is the slowest widening)
 (define use-lbl-obj? #f)
+(define use-return-point-versioning? #f)
 
 (define (type-motley-union tctx type1 type2 widen?)
 

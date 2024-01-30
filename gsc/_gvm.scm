@@ -3096,7 +3096,9 @@
                                         types-after)))
                               (locenv-set types-at-ret
                                           result-loc
-                                          (make-type-top-with-new-length-bound bb)))))
+                                          (if use-return-point-versioning?
+                                              (make-type-top-with-new-length-bound bb)
+                                              type-top)))))
                       (new-ret
                        (and ret
                             (reach-ret* ret
