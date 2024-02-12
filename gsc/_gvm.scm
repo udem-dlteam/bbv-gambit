@@ -3968,9 +3968,12 @@
 
   (for-each dump-proc (reachable-procs procs)))
 
-(define (virtual.dump-cfg procs port)
+(define (virtual.dump-cfg gvm-interpret-ctx port)
 
   ;; For generating visual representation of control flow graph with "dot".
+
+  (define procs (vector-ref gvm-interpret-ctx 0))
+  (define max-branch-count (vector-ref gvm-interpret-ctx 1))
 
   (define dd (make-dot-digraph (proc-obj-name (car procs))))
 
@@ -3999,19 +4002,11 @@
       (vector-ref colors (modulo orig-lbl (vector-length colors)))
       node-info-default-bgcolor))
 
-
   (let ((bbs-tbl (make-table 'test: eq?))
         (proc-tbl (make-table)))
 
     (define (proc-repr proc)
       (format-gvm-opnd (make-obj proc) '()))
-
-    (define (proc-id proc proc-index)
-      (bb-id (let ((x (proc-obj-code proc)))
-               (if (bbs? x)
-                   (bbs-entry-lbl-num x)
-                   0))
-             proc-index))
 
     (define (bb-id bb-index proc-index)
       (string-append "proc"
@@ -4063,23 +4058,34 @@
                   (line-id (gen-port)))
 
               (define (target-id ref)
-                (if (pair? ref)
-                    (proc-id (car ref) (cdr ref)) ;; a label outside of this bbs
-                    (bb-id ref proc-index))) ;; a label in this bbs
+                (cond ((pair? ref)
+                       ;; a label outside of this bbs
+                       ;; lbl=(car ref), bbs=(cdr ref)
+                       (let ((info (table-ref bbs-tbl (cdr ref))))
+                         (bb-id (car ref) (cdr info))))
+                      (else
+                       ;; a label in this bbs
+                       (bb-id ref proc-index))))
 
               (define (reference? x)
-                (or (table-ref proc-tbl x #f) ;; a label outside of this bbs?
-                    (and (>= (string-length x) 2) ;; a label in this bbs?
-                         (char=? (string-ref x 0) #\#)
-                         (string->number (substring x 1 (string-length x))))))
+                (let ((info (table-ref proc-tbl x #f)))
+                  (if info ;; a label outside of this bbs?
+                      (let* ((proc (car info))
+                             (proc-index (cdr info))
+                             (bbs (proc-obj-code proc)))
+                        (cons (bbs-entry-lbl-num bbs) bbs))
+                      (and (>= (string-length x) 2) ;; a label in this bbs?
+                           (char=? (string-ref x 0) #\#)
+                           (string->number (substring x 1 (string-length x)))))))
 
-              (define (add-edge from side targ-id width label)
+              (define (add-edge from side targ-id width color label)
                 (dot-digraph-add-edge!
                  dd
                  (dot-digraph-gen-edge
                   (string-append id ":" from side)
                   targ-id
                   width
+                  color
                   label)))
 
               (define (add-branch-edge from targ-bbs targ-lbl)
@@ -4088,13 +4094,30 @@
                   (add-branch-edge-with-count from targ-bbs targ-lbl count)))
 
               (define (add-branch-edge-with-count from targ-bbs targ-lbl count)
-                (let ((info (table-ref bbs-tbl targ-bbs)))
+
+                (define (edge width color label)
                   (add-edge
                    from
                    ":s"
-                   (bb-id targ-lbl (cdr info))
-                   (if (> count 0) (if (>= count 100) 8 4) 1)
-                   (if (> count 0) (number->string count) #f))))
+                   (let ((info (table-ref bbs-tbl targ-bbs)))
+                     (bb-id targ-lbl (cdr info)))
+                   width
+                   color
+                   label))
+
+                (if (> count 0)
+                    (let ((cbrt
+                           (inexact->exact
+                            (round (expt max-branch-count 0.333))))
+                          (label
+                           (number->string count)))
+                      (cond ((<= count cbrt)
+                             (edge 3 "#9DC262" label)) ;; greenish
+                            ((<= count (* cbrt cbrt))
+                             (edge 6 "#F8A804" label)) ;; yellowish
+                            (else
+                             (edge 9 "#E40303" label)))) ;; redish
+                    (edge 1 #f #f))) ;; black
 
               (define (add-branch-edges from ref)
                 (cond ((not ref)
@@ -4111,14 +4134,15 @@
                              (table->list (cdr targ-bbs-and-table)))))
                         (table->list branch-counters)))
                       ((pair? ref)
-                       ;; a label outside of this bbs
-                       (add-branch-edge from (proc-obj-code (car ref)) (cdr ref)))
+                       ;; a label outside of this bbs...
+                       ;; lbl=(car ref), bbs=(cdr ref)
+                       (add-branch-edge from (cdr ref) (car ref)))
                       (else
-                       ;; a label in this bbs
+                       ;; a label inside this bbs
                        (add-branch-edge from bbs ref))))
 
               (define (add-ref-edge from side ref)
-                (add-edge from side (target-id ref) 0 #f))
+                (add-edge from side (target-id ref) 0 #f #f))
 
               (dot-digraph-gen-row
                (dot-digraph-gen-col
@@ -4141,7 +4165,7 @@
                                      (pair? before)
                                      (equal? (car before) "")))
                                (ref
-                                (reference? x)))
+                                (reference? x)));;either (bbs . lbl) / lbl / #f
                           (if (or branch-destination? ref)
                               (if last-instr? ;; should arrow exit south?
                                   (let ((ref-id (gen-port)))
@@ -4381,6 +4405,7 @@
                     (gen-label referrer)
                     (gen-label var)
                     (if jump? 1 0) ;; solid or dotted line
+                    #f ;; color
                     #f))))) ;; no label
           (sort-list (map var-name (varset->list dependencies))
                      (lambda (x y)
@@ -4535,9 +4560,9 @@
     ,@(dot-digraph-edges dd)
     "}\n"))
 
-(define (dot-digraph-gen-edge from to width label)
+(define (dot-digraph-gen-edge from to width color label)
   `("  " ,from " -> " ,to
-    ,@(if (and (= width 1) (not label))
+    ,@(if (and (= width 1) (not color) (not label))
           '()
           `(" ["
             ,@(if label `("headlabel=\"" ,label "\" labelfontsize=" ,(number->string (* 4 (max 3 width)))) '())
@@ -4546,6 +4571,9 @@
                   (if (< width 1)
                       `(" style=dotted")
                       `(" style=\"setlinewidth(" ,(number->string width) ")\"")))
+            ,@(if (not color)
+                  '()
+                  `(" color=\"" ,color "\""))
             "]"))
     ";\n"))
 
@@ -5479,18 +5507,23 @@
 (define (mark-exit-jump state)
   (instr-comment-add! (InterpreterState-current-instruction state) 'exit-jump #t))
 
-(define (increment-branch-counter branch-instr target-bbs target-bb)
-  (let* ((table1
+(define (increment-branch-counter state target-bbs target-bb)
+  (let* ((branch-instr
+          (InterpreterState-current-instruction state))
+         (table1
           (get-branch-counters branch-instr))
          (table2
           (or (table-ref table1 target-bbs #f)
               (let ((t (make-table)))
                 (table-set! table1 target-bbs t)
-                t))))
-    (table-set!
-     table2
-     (bb-lbl-num target-bb)
-     (+ 1 (table-ref table2 (bb-lbl-num target-bb) 0)))))
+                t)))
+         (count
+          (+ 1 (table-ref table2 (bb-lbl-num target-bb) 0)))
+         (ctx
+          (InterpreterState-ctx state)))
+    (if (> count (vector-ref ctx 1))
+        (vector-set! ctx 1 count))
+    (table-set! table2 (bb-lbl-num target-bb) count)))
 
 (define (get-branch-counters branch-instr)
   (or (instr-comment-get branch-instr 'branch-counter)
@@ -5769,7 +5802,7 @@
 (define (nb-args-on-stack nb-args) (max 0 (- nb-args backend-nb-args-in-registers)))
 (define (nb-args-in-registers nb-args) (- nb-args (nb-args-on-stack nb-args)))
 
-(define (gvm-interpret module-procs)
+(define (gvm-interpret gvm-interpret-ctx)
   ;; comment/uncomment to stop execution or not when an error happens in the GVM interpreter
   (define (with-exception-catcher _ f) (f))
 
@@ -5777,7 +5810,7 @@
     (lambda (e) (display-exception e))
     (lambda ()
       (pprint '***GVM-Interpreter)
-      (let ((state (init-interpreter-state module-procs)))
+      (let ((state (init-interpreter-state gvm-interpret-ctx)))
         (InterpreterState-execution-loop state)
         (InterpreterState-primitive-counter-trace state)))))
 
@@ -5809,11 +5842,12 @@
   debug-predicate
   assert-types?
   (primitive-counter unprintable:)
-  (bbs-names unprintable:))
+  (bbs-names unprintable:)
+  ctx)
 
 (define (InterpreterState-stack state) (RTE-stack (InterpreterState-rte state)))
 
-(define (init-interpreter-state module-procs)
+(define (init-interpreter-state gvm-interpret-ctx)
   (define (add-global-primitive rte name)
     (define prim-proc-obj
       (make-proc-obj ;; I don't know what these do, but they are not used anyway
@@ -5829,7 +5863,8 @@
         '(#f)))
     (RTE-global-set! rte name prim-proc-obj))
 
-  (let* ((main-proc (car module-procs))
+  (let* ((module-procs (vector-ref gvm-interpret-ctx 0))
+         (main-proc (car module-procs))
          (main-bbs (proc-obj-code main-proc))
          (entry-lbl-num (bbs-entry-lbl-num main-bbs))
          (state
@@ -5847,7 +5882,8 @@
             #f                                       ;; debug-predicate
             #f                                       ;; assert-types?
             (make-table)                             ;; primitive counter
-            (make-table test: eq? weak-keys: #t)))   ;; bbs-names
+            (make-table test: eq? weak-keys: #t)     ;; bbs-names
+            gvm-interpret-ctx))                      ;; ctx
          (rte (InterpreterState-rte state)))
     ;; connect RTE to the state
     (RTE-state-set! rte state)
@@ -6180,7 +6216,7 @@
          (bb (lbl-num->bb lbl bbs))
          (label-instr (bb-label-instr bb))
          (entry-fs (bb-entry-frame-size bb)))
-    (increment-branch-counter (InterpreterState-current-instruction state) bbs bb)
+    (increment-branch-counter state bbs bb)
     (if exit-fs (Stack-frame-exit! stack exit-fs))
     (if (eq? (label-kind label-instr) 'entry)
         (let ((args (InterpreterState-pop-args! state nargs)))

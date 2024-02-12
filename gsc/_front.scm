@@ -364,10 +364,12 @@
                                1 ;; preload flag (linker may change this)
                                (car module-procs) ;; module main
                                #f ;; space for foreign pointer to ___module_struct
-                               )))
+                               ))
+                      (gvm-interpret-ctx
+                       (vector module-procs 0))) ;; max-branch-count
 
                  (if compiler-option-gvm-interpret
-                     (gvm-interpret module-procs))
+                     (gvm-interpret gvm-interpret-ctx))
 
                  (if compiler-option-report
                      (generate-report env))
@@ -381,7 +383,7 @@
                  (if compiler-option-cfg
                      (let ((cfg-port
                             (open-output-file (string-append root ".cfg"))))
-                       (virtual.dump-cfg module-procs cfg-port)
+                       (virtual.dump-cfg gvm-interpret-ctx cfg-port)
                        (close-output-port cfg-port)))
 
                  (if compiler-option-dg
