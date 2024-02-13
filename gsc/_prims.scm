@@ -9039,19 +9039,21 @@
 
 ;;; type inference
 
+(define (type-can-be-fixnum? tctx type)
+  (not (type-bot? (type-intersection tctx type type-fixnum))))
+
 (define (type-infer-fixnum1 tctx infer type)
-  (if (not (type-included? tctx type type-fixnum))
-      (make-type-fixnum #f #f) ;; TODO: is this correct
+  (if (type-can-be-fixnum? tctx type)
       (let* ((f (type-motley-force tctx type))
              (fixnum-range (type-motley-fixnum-range f))
              (lo (type-fixnum-range-lo fixnum-range))
              (hi (type-fixnum-range-hi fixnum-range)))
-        (infer tctx lo hi))))
+        (infer tctx lo hi))
+      type-bot-fixnum-range))
 
 (define (type-infer-fixnum2 tctx infer type1 type2)
-  (if (or (not (type-included? tctx type1 type-fixnum))
-          (not (type-included? tctx type2 type-fixnum)))
-      (make-type-fixnum #f #f) ;; TODO: is this correct
+  (if (and (type-can-be-fixnum? tctx type1)
+           (type-can-be-fixnum? tctx type2))
       (let* ((f1 (type-motley-force tctx type1))
              (fixnum-range1 (type-motley-fixnum-range f1))
              (lo1 (type-fixnum-range-lo fixnum-range1))
@@ -9060,7 +9062,8 @@
              (fixnum-range2 (type-motley-fixnum-range f2))
              (lo2 (type-fixnum-range-lo fixnum-range2))
              (hi2 (type-fixnum-range-hi fixnum-range2)))
-        (infer tctx lo1 hi1 lo2 hi2))))
+        (infer tctx lo1 hi1 lo2 hi2))
+      type-bot-fixnum-range))
 
 (define (type-infer-fold infer0 infer1 infer2)
   (lambda (tctx args)
