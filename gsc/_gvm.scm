@@ -2305,7 +2305,7 @@
 
   (define nb-versions (make-table))
 
-  (define (make-bbvctx types cost path) (vector types cost path))
+  (define (make-bbvctx types) (vector types 0 '())) ;; TODO: cost and path deprecated?
   (define (bbvctx-types bbvctx) (vector-ref bbvctx 0))
   (define (bbvctx-cost bbvctx) (vector-ref bbvctx 1))
   (define (bbvctx-path bbvctx) (vector-ref bbvctx 2))
@@ -2313,6 +2313,10 @@
   (define (walk-bbs bbs)
 
     (define work-queue (queue-empty))
+
+    (define-type queue-task
+      bb
+      version-lbl)
 
     (define orig-lbl-mapping (make-table))
     (define (orig-lbl-mapping-set! lbl orig-lbl) (table-set! orig-lbl-mapping lbl orig-lbl))
@@ -2355,7 +2359,7 @@
         (if (pair? missing-reachables)
           (error "all-reachables-exist?" "no"))))
 
-    (define (update-reachability! cause-lbl)
+    (define (update-reachability!)
       ;(write (list 'UPDATING-REACHABILITY))(newline)
 
       ;; recompute basic block references
@@ -2399,24 +2403,22 @@
                          r))
                      (vector-ref bb-versions 0)))
                   (if changed?
-                      (track-version-history orig-lbl cause-lbl 'gc)) ;; track history of versions
+                      (track-version-history orig-lbl -1 'gc)) ;; track history of versions
                   ;; add back newly reachable versions to be processed
                   (for-each
                     (lambda (types-lbl)
                       (let ((types (car types-lbl))
                             (lbl (replacement-lbl-num (cdr types-lbl))))
                         (if (not (lbl-num->bb lbl new-bbs))
-                            (queue-put!
-                              work-queue
-                              (lambda () (if (reachable? lbl) (walk-bb bb types 0 '() orig-lbl lbl))))))) ;; TODO cost and path?
+                            (queue-put! work-queue (make-queue-task bb lbl)))))
                     (vector-ref bb-versions 0))))))
         bbs))
 
-      (define (bbs-cleanup cause-lbl)
+      (define (bbs-cleanup)
         ;; remove unreachable bb
         ;; required to avoid having uninitialized bb in the bbs
         ;; (write (list 'GC-REACHABILITY))(newline)
-        (update-reachability! cause-lbl)
+        (update-reachability!)
         (bbs-for-each-bb
           (lambda (bb)
             (let ((lbl (bb-lbl-num bb)))
@@ -2541,8 +2543,6 @@
 
       (define (reach lbl from-lbl bbvctx)
         (let* ((types-before (bbvctx-types bbvctx))
-               (cost (bbvctx-cost bbvctx))
-               (path (bbvctx-path bbvctx))
                (bb (lbl-num->bb lbl bbs))
                (label (bb-label-instr bb))
                (frame (gvm-instr-frame label))
@@ -2553,17 +2553,7 @@
                              (label-entry-rest? label)))
                     (generic-entry-frame-types frame)
                     (resized-frame-types-remove-dead frame types-before)))
-               (bb-versions (or (table-ref versions lbl #f)
-                                (let ((bb-versions
-                                       (if track-version-history?
-                                           (vector '()
-                                                   (make-table test: locenv-eqv?)
-                                                   (make-text-grid)
-                                                   (make-table))
-                                           (vector '()
-                                                   (make-table test: locenv-eqv?)))))
-                                  (table-set! versions lbl bb-versions)
-                                  bb-versions)))
+               (bb-versions (get-or-init-versions bb))
                (types-lbl-alist (vector-ref bb-versions 0))
                (all-versions-tbl (vector-ref bb-versions 1))
                (old-existing-version (table-ref all-versions-tbl types-before #f))
@@ -2574,85 +2564,14 @@
                  (and existing-version
                       (memv existing-version (map cdr types-lbl-alist)))))
 
-          (define debug-merged-types #f)
-
           (if existing-version-is-live?
               existing-version
               (let* ((bb (lbl-num->bb lbl bbs))
                      (new-lbl (or existing-version (new-lbl! lbl)))
                      (step-num (begin (set! step-count (+ 1 step-count)) step-count))
-                     (looping? (assoc lbl path))
                      (new-types-lbl-alist
                       (cons (cons types-for-version new-lbl)
-                            types-lbl-alist))
-                     (versions-merged #f)
-                     (cause-lbl new-lbl)
-                     (merge (lambda ()
-                       (let* ((new-types-lbl-alist (vector-ref (table-ref versions lbl) 0))
-                         (types-lbl-vect
-                            (list->vector new-types-lbl-alist))
-                           (in-out
-                            (find-merge-candidates tctx types-lbl-vect))
-                           (in
-                            (car in-out))
-                           (out
-                            (cdr in-out))
-                           (versions-to-merge ;; must be ordered by lbl (age of the version)
-                                              ;; so type-union knowns the direction of loops
-                            (list-sort
-                              (lambda (v1 v2) (< (cdr v1) (cdr v2)))
-                              (map (lambda (i) (vector-ref types-lbl-vect i))
-                                  in)))
-                           (versions-to-keep
-                            (map (lambda (i) (vector-ref types-lbl-vect i))
-                                 out))
-                           (merged-types
-                            (types-merge-multi
-                             (map car versions-to-merge)
-                             #t))
-                           (existing-lbl-of-merged-type (table-ref all-versions-tbl merged-types #f))
-                           (new-lbl2
-                            (or (and existing-lbl-of-merged-type
-                                     (replacement-lbl-num existing-lbl-of-merged-type))
-                                (new-lbl! lbl)))
-                           (merged-types
-                            (if (not existing-lbl-of-merged-type)
-                                merged-types
-                                (get-version-types new-lbl2))))
-
-                      (set! debug-merged-types merged-types)
-
-                      (set-version-types! new-lbl2 merged-types)
-
-                      (for-each
-                       (lambda (types-lbl)
-                         (let ((types (car types-lbl))
-                               (lbl (cdr types-lbl)))
-                           (if debug-bbv? (pprint (list 'adding lbl '--> new-lbl2)))
-                           (table-set! lbl-mapping lbl new-lbl2)))
-                       versions-to-merge)
-
-                      (set! versions-merged versions-to-merge)
-
-                      (table-set! all-versions-tbl merged-types new-lbl2)
-
-                      (vector-set!
-                       bb-versions
-                       0
-                       (cons (cons merged-types new-lbl2)
-                             versions-to-keep))
-
-                      (track-version-history lbl from-lbl 'merge) ;; track history of versions
-
-                      (if (memv 0 out) ;; Only update label and types if the original version was merged!!!!!!
-                          (queue-put! ;; schedule walk of the bb created by merge
-                            work-queue
-                            (lambda ()
-                              (if (reachable? new-lbl2)
-                                  (walk-bb bb merged-types cost path lbl new-lbl2)))))
-
-                      ;; schedule GC
-                      (set! update-reachability-required? cause-lbl)))))
+                            types-lbl-alist)))
 
                 (set-version-types! new-lbl types-for-version)
 
@@ -2662,31 +2581,18 @@
 
                 (track-version-history lbl from-lbl 'add) ;; track history of versions
 
-                (if (> (length new-types-lbl-alist)
-                       (max 1 (bb-version-limit bb)))
-                    (queue-put!
-                      work-queue
-                      (lambda ()
-                        (if (> (length (vector-ref (table-ref versions lbl) 0))
-                               (max 1 (bb-version-limit bb)))
-                          (merge)))))
-
-                (queue-put!
-                  work-queue
-                  (lambda ()
-                    (if (reachable? new-lbl) ;; only process this block if it is reachable
-                        (walk-bb bb types-for-version cost path lbl new-lbl))))
+                (queue-put! work-queue (make-queue-task bb new-lbl))
 
                 (reachability-set! new-lbl #t)
 
                 new-lbl))))
 
-      (define (walk-bb bb types-before cost path orig-lbl new-lbl)
-        ;;(pprint `(walk-bb ,(bb-lbl-num bb) ,types-before ,cost ,path ,new-lbl))
-        (let ((new-bb #f))
+      (define (walk-bb bb types-before new-lbl)
+        (let ((orig-lbl (bb-lbl-num bb))
+              (new-bb #f))
 
           (define show #t)
-          (define (reach* lbl from-lbl types-after cost path)
+          (define (reach* lbl from-lbl types-after)
             (if (and debug-bbv? show)
                 (begin
                   (write-bb new-bb '(new) (current-output-port))
@@ -2696,11 +2602,9 @@
                    from-lbl
                    (make-bbvctx
                     (let ((dest-fs (bb-entry-frame-size (lbl-num->bb lbl bbs))))
-                      (types-keep-topmost-slots types-after dest-fs))
-                    cost
-                    path)))
+                      (types-keep-topmost-slots types-after dest-fs)))))
 
-        (define (reach-ret* lbl from-lbl types-after cost path)
+        (define (reach-ret* lbl from-lbl types-after)
             (if (and debug-bbv? show)
                 (begin
                   (write-bb new-bb '(new) (current-output-port))
@@ -2712,9 +2616,7 @@
                     (let* ((bb (lbl-num->bb lbl bbs))
                            (label (bb-label-instr bb))
                            (frame (gvm-instr-frame label)))
-                      (types-truncate types-after frame))
-                    cost
-                    path)))
+                      (types-truncate types-after frame)))))
 
         (define (walk-opnd gvm-opnd)
           (and gvm-opnd
@@ -2727,7 +2629,7 @@
                            (bb-label-instr bb))
                           (types-bef
                            (generic-entry-frame-types (gvm-instr-frame label))))
-                     (make-lbl (reach* lbl #f types-bef cost path)))
+                     (make-lbl (reach* lbl #f types-bef)))
                    gvm-opnd)))
 
         (define (walk-loc gvm-opnd)
@@ -2766,12 +2668,10 @@
                   (gvm-instr-frame gvm-instr)
                   types-before)))
 
-            (set! cost (+ cost instr-cost))
 
             (case (gvm-instr-kind gvm-instr)
 
               ((label)
-               (set! cost (- cost instr-cost)) ;; undo cost for labels
 ;;               (pprint '****label)
                (let ((new-instr
                       (case (label-kind gvm-instr)
@@ -2988,7 +2888,7 @@
                                            types-entry))))
                                (make-closure-parms
                                 (closure-parms-loc parms)
-                                (reach* lbl #f types-entry 0 '())
+                                (reach* lbl #f types-entry)
                                 new-opnds))
                              rev-parms))
                            (let ((new-instr
@@ -3035,18 +2935,14 @@
                                      (and true-types
                                           (reach* (ifjump-true gvm-instr)
                                                   new-lbl
-                                                  true-types
-                                                  cost
-                                                  path)))
+                                                  true-types)))
                                     (false-types
                                      (narrow (cdr result-types)))
                                     (false-lbl
                                      (and false-types
                                           (reach* (ifjump-false gvm-instr)
                                                   new-lbl
-                                                  false-types
-                                                  cost
-                                                  path))))
+                                                  false-types))))
                                (if true-lbl
                                    (if false-lbl
                                        (make-ifjump
@@ -3080,14 +2976,10 @@
                             new-opnds
                             (reach* (ifjump-true gvm-instr)
                                     new-lbl
-                                    types-after
-                                    cost
-                                    path)
+                                    types-after)
                             (reach* (ifjump-false gvm-instr)
                                     new-lbl
-                                    types-after
-                                    cost
-                                    path)
+                                    types-after)
                             (ifjump-poll? gvm-instr)
                             (gvm-instr-frame gvm-instr)
                             (gvm-instr-comment gvm-instr)))))
@@ -3127,9 +3019,7 @@
                        (and ret
                             (reach-ret* ret
                                         new-lbl
-                                        types-return
-                                        (+ (- cost instr-cost) call-cost)
-                                        path))) ;;;;;;;;;TODO
+                                        types-return))) ;;;;;;;;;TODO
                       (types-after
                        (if new-ret
                            (locenv-set
@@ -3156,17 +3046,13 @@
                                                    types-after)))
                                          (make-lbl (reach* lbl
                                                            new-lbl
-                                                           merged-types
-                                                           cost
-                                                           path)))
+                                                           merged-types)))
                                        (make-obj val)))
                                  opnd))
                            (if (lbl? opnd)
                                (make-lbl (reach* (lbl-num opnd)
                                                  new-lbl
-                                                 types-after
-                                                 cost
-                                                 path))
+                                                 types-after))
                                opnd)))
                       (new-instr
                        (make-jump
@@ -3184,8 +3070,6 @@
                         (gvm-instr-comment gvm-instr))))
                  (gvm-instr-types-set! new-instr types-after)
                  new-instr)))))
-
-          (set! path (cons (cons orig-lbl cost) path))
 
           (let ((new-label-instr (walk-instr (bb-label-instr bb) types-before)))
             (set! new-bb (make-bb new-label-instr new-bbs)))
@@ -3214,6 +3098,72 @@
                        (walk-instr (bb-branch-instr bb) types-before)))
                   (bb-put-branch! new-bb new-instr))))))
 
+      (define (get-or-init-versions bb)
+        (let ((lbl (bb-lbl-num bb)))
+          (or (table-ref versions lbl #f)
+              (let ((bb-versions
+                      (if track-version-history?
+                          (vector '()
+                                  (make-table test: locenv-eqv?)
+                                  (make-text-grid)
+                                  (make-table))
+                          (vector '()
+                                  (make-table test: locenv-eqv?)))))
+                (table-set! versions lbl bb-versions)
+                bb-versions))))
+
+      (define (need-merge? bb)
+        (let* ((lbl (bb-lbl-num bb))
+               (bb-versions (get-or-init-versions bb))
+               (types-lbl-alist (vector-ref bb-versions 0)))
+          (> (length types-lbl-alist) (max 1 (bb-version-limit bb)))))
+
+      (define (merge bb)
+        (let* ((lbl (bb-lbl-num bb))
+               (bb-versions (get-or-init-versions bb))
+               (types-lbl-alist (vector-ref bb-versions 0))
+               (all-versions-tbl (vector-ref bb-versions 1))
+               (types-lbl-vect (list->vector types-lbl-alist))
+               (in-out (find-merge-candidates tctx types-lbl-vect))
+               (in (car in-out))
+               (out (cdr in-out))
+               (versions-to-merge ;; must be ordered by lbl (age of the version)
+                                  ;; so type-union knowns the direction of loops
+                (list-sort (lambda (v1 v2) (< (cdr v1) (cdr v2)))
+                           (map (lambda (i) (vector-ref types-lbl-vect i)) in)))
+               (versions-to-keep (map (lambda (i) (vector-ref types-lbl-vect i)) out))
+               (merged-types (types-merge-multi (map car versions-to-merge) #t))
+               (existing-lbl-of-merged-type (table-ref all-versions-tbl merged-types #f))
+               (new-lbl (or (and existing-lbl-of-merged-type
+                                  (replacement-lbl-num existing-lbl-of-merged-type))
+                             (new-lbl! lbl)))
+               (merged-types (if (not existing-lbl-of-merged-type)
+                                 merged-types
+                                 (get-version-types new-lbl))))
+
+      (set-version-types! new-lbl merged-types)
+
+      (for-each
+        (lambda (types-lbl)
+          (let ((types (car types-lbl))
+                (lbl (cdr types-lbl)))
+            (table-set! lbl-mapping lbl new-lbl)))
+        versions-to-merge)
+
+      (table-set! all-versions-tbl merged-types new-lbl)
+
+      (vector-set!
+        bb-versions
+        0
+        (cons (cons merged-types new-lbl) versions-to-keep))
+
+      (track-version-history lbl -1 'merge) ;; track history of versions
+
+      (queue-put! work-queue (make-queue-task bb new-lbl))
+
+      ;; update reachability
+      (bbs-cleanup)))
+
       (let* ((entry-lbl
               (bbs-entry-lbl-num bbs))
              (entry-bb
@@ -3223,20 +3173,21 @@
              (types-before
               (generic-entry-frame-types (gvm-instr-frame entry-label))))
 
-        (queue-put!
-          work-queue
-          (lambda () (bbs-entry-lbl-num-set! new-bbs (reach entry-lbl #f (make-bbvctx types-before 0 '())))))
-
+        (bbs-entry-lbl-num-set! new-bbs (reach entry-lbl #f (make-bbvctx types-before)))
         (let loop ()
-          (if (not (queue-empty? work-queue))
-              (begin
-                (set! update-reachability-required? #f)
-                ((queue-get! work-queue))
-                (if update-reachability-required?
-                    (bbs-cleanup update-reachability-required?))
-                (loop)))))
+          (let* ((task (queue-get! work-queue))
+                 (bb (queue-task-bb task))
+                 (version-lbl (queue-task-version-lbl task))
+                 (types (get-version-types version-lbl)))
+
+            (if (need-merge? bb) (merge bb))
+
+            ;; check if still reachable before walk
+            (if (reachable? version-lbl) (walk-bb bb types version-lbl))
+            
+            (if (not (queue-empty? work-queue)) (loop)))))
               
-        ;(bbs-cleanup)
+        (bbs-cleanup)
         (all-reachables-exist?))
 
   (define (finalize)
