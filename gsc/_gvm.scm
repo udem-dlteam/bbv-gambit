@@ -2374,16 +2374,13 @@
       (let* ((entry-lbl (bbs-entry-lbl-num bbs))
              (bb-versions (table-ref versions entry-lbl #f)))
         (if bb-versions
-            (let* ((all-types (vector-ref bb-versions 0))
-                   (starting-types (caar all-types))
-                   (starting-label (cdar all-types)))
-              (let visit ((lbl starting-label))
-                  (if (not (reachable? lbl)) ;; not visited
-                      (let* ((bb (lbl-num->bb lbl new-bbs)))
-                        (reachability-set! lbl #t)
-                        (if bb
-                          (let ((refs (map replacement-lbl-num (bb-references bb))))
-                            (for-each visit refs)))))))))
+            (let visit ((lbl (bbs-entry-lbl-num new-bbs)))
+                (if (not (reachable? lbl)) ;; not visited
+                    (let* ((bb (lbl-num->bb lbl new-bbs)))
+                      (reachability-set! lbl #t)
+                      (if bb
+                        (let ((refs (map replacement-lbl-num (bb-references bb))))
+                          (for-each visit refs))))))))
 
       ;; remove unreachable versions from live versions of all blocks
       (bbs-for-each-bb
@@ -3119,6 +3116,9 @@
           (> (length types-lbl-alist) (max 1 (bb-version-limit bb)))))
 
       (define (merge bb)
+        (define (sort-versions types-lbl-alist)
+          (list-sort (lambda (v1 v2) (< (cdr v1) (cdr v2))) types-lbl-alist))
+
         (let* ((lbl (bb-lbl-num bb))
                (bb-versions (get-or-init-versions bb))
                (types-lbl-alist (vector-ref bb-versions 0))
@@ -3127,10 +3127,7 @@
                (in-out (find-merge-candidates tctx types-lbl-vect))
                (in (car in-out))
                (out (cdr in-out))
-               (versions-to-merge ;; must be ordered by lbl (age of the version)
-                                  ;; so type-union knowns the direction of loops
-                (list-sort (lambda (v1 v2) (< (cdr v1) (cdr v2)))
-                           (map (lambda (i) (vector-ref types-lbl-vect i)) in)))
+               (versions-to-merge (map (lambda (i) (vector-ref types-lbl-vect i)) in))
                (versions-to-keep (map (lambda (i) (vector-ref types-lbl-vect i)) out))
                (merged-types (types-merge-multi (map car versions-to-merge) #t))
                (existing-lbl-of-merged-type (table-ref all-versions-tbl merged-types #f))
@@ -3155,7 +3152,11 @@
       (vector-set!
         bb-versions
         0
-        (cons (cons merged-types new-lbl) versions-to-keep))
+        ;; versions must always be sorted by age, lower labels first
+        ;; so type-union knowns the direction of loops
+        ;; it's not sufficient to add new versions at the end since
+        ;; a merge can result in an existing version
+        (sort-versions (cons (cons merged-types new-lbl) versions-to-keep)))
 
       (track-version-history lbl -1 'merge) ;; track history of versions
 
