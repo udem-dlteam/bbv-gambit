@@ -9049,7 +9049,7 @@
              (lo (type-fixnum-range-lo fixnum-range))
              (hi (type-fixnum-range-hi fixnum-range)))
         (infer tctx lo hi))
-      type-bot-fixnum-range))
+      type-bot))
 
 (define (type-infer-fixnum2 tctx infer type1 type2)
   (if (and (type-can-be-fixnum? tctx type1)
@@ -9063,7 +9063,7 @@
              (lo2 (type-fixnum-range-lo fixnum-range2))
              (hi2 (type-fixnum-range-hi fixnum-range2)))
         (infer tctx lo1 hi1 lo2 hi2))
-      type-bot-fixnum-range))
+      type-bot))
 
 (define (type-infer-fold infer0 infer1 infer2)
   (lambda (tctx args)
@@ -9504,10 +9504,10 @@
 
 
 (define (type-infer-common-fxremainder tctx lo1 hi1 lo2 hi2)
-  (make-type-fixnum 0 -1)) ;; TODO: implement!
+  type-top-fixnum-range) ;; TODO: implement!
 
 (define (type-infer-common-fxmodulo tctx lo1 hi1 lo2 hi2)
-  (make-type-fixnum 0 -1)) ;; TODO: implement!
+  type-top-fixnum-range) ;; TODO: implement!
 
 (define-macro (case-signs args . body)
   (define sign-procedure-symbol (gensym 'get-sign))
