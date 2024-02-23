@@ -3138,32 +3138,32 @@
                                  merged-types
                                  (get-version-types new-lbl))))
 
-      (set-version-types! new-lbl merged-types)
+          (set-version-types! new-lbl merged-types)
 
-      (for-each
-        (lambda (types-lbl)
-          (let ((types (car types-lbl))
-                (lbl (cdr types-lbl)))
-            (table-set! lbl-mapping lbl new-lbl)))
-        versions-to-merge)
+          (for-each
+            (lambda (types-lbl)
+              (let ((types (car types-lbl))
+                    (lbl (cdr types-lbl)))
+                (table-set! lbl-mapping lbl new-lbl)))
+            versions-to-merge)
 
-      (table-set! all-versions-tbl merged-types new-lbl)
+          (table-set! all-versions-tbl merged-types new-lbl)
 
-      (vector-set!
-        bb-versions
-        0
-        ;; versions must always be sorted by age, lower labels first
-        ;; so type-union knowns the direction of loops
-        ;; it's not sufficient to add new versions at the end since
-        ;; a merge can result in an existing version
-        (sort-versions (cons (cons merged-types new-lbl) versions-to-keep)))
+          (vector-set!
+            bb-versions
+            0
+            ;; versions must always be sorted by age, lower labels first
+            ;; so type-union knowns the direction of loops
+            ;; it's not sufficient to add new versions at the end since
+            ;; a merge can result in an existing version
+            (sort-versions (cons (cons merged-types new-lbl) versions-to-keep)))
 
-      (track-version-history lbl -1 'merge) ;; track history of versions
+          (track-version-history lbl -1 'merge) ;; track history of versions
 
-      (queue-put! work-queue (make-queue-task bb new-lbl))
+          (queue-put! work-queue (make-queue-task bb new-lbl))
 
-      ;; update reachability
-      (bbs-cleanup)))
+          ;; update reachability
+          (bbs-cleanup)))
 
       (let* ((entry-lbl
               (bbs-entry-lbl-num bbs))
