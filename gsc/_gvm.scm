@@ -2175,7 +2175,7 @@
 ;; -------------
 
 (define debug-bbv? #f)
-(define track-version-history? #f)
+(define track-version-history? #t)
 
 (define instr-cost 1)
 (define call-cost 100)
@@ -2400,7 +2400,7 @@
                          r))
                      (vector-ref bb-versions 0)))
                   (if changed?
-                      (track-version-history orig-lbl -1 'gc)) ;; track history of versions
+                      (track-version-history orig-lbl #f 'gc)) ;; track history of versions
                   ;; add back newly reachable versions to be processed
                   (for-each
                     (lambda (types-lbl)
@@ -2457,7 +2457,7 @@
                    (col (max 1 (text-grid-cols text-grid))))
 
               (if (memq operation '(add merge))
-                  (let* ((newest-types-lbl (car types-lbl-alist))
+                  (let* ((newest-types-lbl (last types-lbl-alist))
                          (types (car newest-types-lbl))
                          (new-lbl (cdr newest-types-lbl)))
                     (or (table-ref version-index-tbl new-lbl #f)
@@ -2567,8 +2567,7 @@
                      (new-lbl (or existing-version (new-lbl! lbl)))
                      (step-num (begin (set! step-count (+ 1 step-count)) step-count))
                      (new-types-lbl-alist
-                      (cons (cons types-for-version new-lbl)
-                            types-lbl-alist)))
+                      (extend-types-lbl-alist types-lbl-alist types-for-version new-lbl)))
 
                 (set-version-types! new-lbl types-for-version)
 
@@ -3115,10 +3114,13 @@
                (types-lbl-alist (vector-ref bb-versions 0)))
           (> (length types-lbl-alist) (max 1 (bb-version-limit bb)))))
 
-      (define (merge bb)
-        (define (sort-versions types-lbl-alist)
+      (define (sort-versions types-lbl-alist)
           (list-sort (lambda (v1 v2) (< (cdr v1) (cdr v2))) types-lbl-alist))
 
+      (define (extend-types-lbl-alist types-lbl-alist types lbl)
+        (sort-versions (cons (cons types lbl) types-lbl-alist)))
+
+      (define (merge bb)
         (let* ((lbl (bb-lbl-num bb))
                (bb-versions (get-or-init-versions bb))
                (types-lbl-alist (vector-ref bb-versions 0))
@@ -3156,9 +3158,9 @@
             ;; so type-union knowns the direction of loops
             ;; it's not sufficient to add new versions at the end since
             ;; a merge can result in an existing version
-            (sort-versions (cons (cons merged-types new-lbl) versions-to-keep)))
+            (extend-types-lbl-alist versions-to-keep merged-types new-lbl))
 
-          (track-version-history lbl -1 'merge) ;; track history of versions
+          (track-version-history lbl #f 'merge) ;; track history of versions
 
           (queue-put! work-queue (make-queue-task bb new-lbl))
 
