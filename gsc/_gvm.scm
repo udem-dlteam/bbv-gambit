@@ -2175,7 +2175,7 @@
 ;; -------------
 
 (define debug-bbv? #f)
-(define track-version-history? #t)
+(define track-version-history? #f)
 
 (define instr-cost 1)
 (define call-cost 100)
@@ -2206,6 +2206,8 @@
 
 ;;  (define column-sep "\x23b9;") ;; for display of history of versions
   (define column-sep ":") ;; for display of history of versions
+
+  (define details-sep #\_) ;; for display of history of versions
 
   (define tctx (make-tctx))
 
@@ -2400,7 +2402,7 @@
                          r))
                      (vector-ref bb-versions 0)))
                   (if changed?
-                      (track-version-history orig-lbl #f 'gc)) ;; track history of versions
+                      (track-version-history orig-lbl '(gc #f))) ;; track history of versions
                   ;; add back newly reachable versions to be processed
                   (for-each
                     (lambda (types-lbl)
@@ -2444,7 +2446,7 @@
       (define (set-version-types! lbl types)
         (table-set! version-types-table lbl types))
 
-      (define (track-version-history lbl from-lbl operation) ;; track history of versions
+      (define (track-version-history lbl operation) ;; track history of versions
         (if track-version-history?
             (let* ((bb (lbl-num->bb lbl bbs))
                    (label (bb-label-instr bb))
@@ -2454,9 +2456,11 @@
                    (text-grid (vector-ref bb-versions 2))
                    (version-index-tbl (vector-ref bb-versions 3))
                    (options '(brief new))
-                   (col (max 1 (text-grid-cols text-grid))))
+                   (col (max 1 (text-grid-cols text-grid)))
+                   (op (car operation))
+                   (from-lbl (cadr operation)))
 
-              (if (memq operation '(add merge))
+              (if (memq op '(add merge))
                   (let* ((newest-types-lbl (last types-lbl-alist))
                          (types (car newest-types-lbl))
                          (new-lbl (cdr newest-types-lbl)))
@@ -2479,7 +2483,7 @@
                     (info
                      (if from-lbl
                          (string-append
-                          (if (memq operation '(add merge))
+                          (if (memq op '(add merge))
                               " <-"
                               " ")
                           (format-gvm-lbl from-lbl '(new)))
@@ -2491,7 +2495,7 @@
                  col
                  column-sep)
 
-                (case operation
+                (case op
                   ((add)
                    (text-grid-set!
                     text-grid
@@ -2527,7 +2531,37 @@
                  text-grid
                  1
                  (+ col 1)
-                 header))
+                 header)
+
+                (if (pair? (cddr operation))
+                    (let* ((details
+                            (caddr operation))
+                           (index
+                            (table-length version-index-tbl))
+                           (width
+                            (apply max (map string-length details)))
+                           (c
+                            col))
+                      (for-each
+                       (lambda (h)
+                         (text-grid-set!
+                          text-grid
+                          (+ index 2)
+                          (+ c 1)
+                          details-sep)
+                         (set! c (+ c 1)))
+                       header)
+                      (for-each
+                       (lambda (line)
+                         (text-grid-set!
+                          text-grid
+                          (+ index 3)
+                          (+ col 1)
+                          (list 'span
+                                (length header)
+                                line))
+                         (set! index (+ index 1)))
+                       details))))
 
               (for-each
                (lambda (types-lbl)
@@ -2575,7 +2609,7 @@
 
                 (vector-set! bb-versions 0 new-types-lbl-alist)
 
-                (track-version-history lbl from-lbl 'add) ;; track history of versions
+                (track-version-history lbl (list 'add from-lbl)) ;; track history of versions
 
                 (queue-put! work-queue (make-queue-task bb new-lbl))
 
@@ -3126,9 +3160,10 @@
                (types-lbl-alist (vector-ref bb-versions 0))
                (all-versions-tbl (vector-ref bb-versions 1))
                (types-lbl-vect (list->vector types-lbl-alist))
-               (in-out (find-merge-candidates tctx types-lbl-vect))
-               (in (car in-out))
-               (out (cdr in-out))
+               (in-out-details (find-merge-candidates tctx types-lbl-vect))
+               (in (vector-ref in-out-details 0))
+               (out (vector-ref in-out-details 1))
+               (details (vector-ref in-out-details 2))
                (versions-to-merge (map (lambda (i) (vector-ref types-lbl-vect i)) in))
                (versions-to-keep (map (lambda (i) (vector-ref types-lbl-vect i)) out))
                (merged-types (types-merge-multi (map car versions-to-merge) #t))
@@ -3160,7 +3195,7 @@
             ;; a merge can result in an existing version
             (extend-types-lbl-alist versions-to-keep merged-types new-lbl))
 
-          (track-version-history lbl #f 'merge) ;; track history of versions
+          (track-version-history lbl (list 'merge #f details)) ;; track history of versions
 
           (queue-put! work-queue (make-queue-task bb new-lbl))
 
@@ -3364,20 +3399,25 @@
   (let* ((n (vector-length types-lbl-vect))
          (min-dist 99999999)
          (min-dist-pair #f)
-         (dist-matrix (make-vector n)))
+         (dist-matrix (make-vector n))
+         (details '()))
 
     (define (get-distance i j)
       (vector-ref
         (vector-ref dist-matrix (max i j))
         (min i j)))
 
-    (define (partition-distance i d)
+    (define (partition-distance i d details)
       (let loop ((j 0) (in (list i)) (out '()))
         (cond
-          ((= j n) (cons in out))
-          ((= i j) (loop (+ j 1) in out))
-          ((<= (apply max (map (lambda (i) (get-distance i j)) in)) d) (loop (+ j 1) (cons j in) out))
-          (else (loop (+ j 1) in (cons j out))))))
+         ((= j n)
+          (vector in out details))
+         ((= i j)
+          (loop (+ j 1) in out))
+         ((<= (apply max (map (lambda (i) (get-distance i j)) in)) d)
+          (loop (+ j 1) (cons j in) out))
+         (else
+          (loop (+ j 1) in (cons j out))))))
 
     (for-each
       (lambda (i)
@@ -3385,18 +3425,25 @@
           (vector-set! dist-matrix i row)
           (for-each
             (lambda (j)
-              (let ((d (exact->inexact (types-distance
-                            tctx
-                            (car (vector-ref types-lbl-vect i))
-                            (car (vector-ref types-lbl-vect j))))))
-                    (vector-set! row j d)
-                    (when (< d min-dist)
-                          (set! min-dist d)
-                          (set! min-dist-pair (cons i j)))))
+              (let* ((ti (vector-ref types-lbl-vect i))
+                     (tj (vector-ref types-lbl-vect j))
+                     (d (types-distance tctx (car ti) (car tj))))
+                (set! details
+                  (cons (string-append
+                         (format-gvm-lbl (cdr ti) '(new))
+                         " "
+                         (format-gvm-lbl (cdr tj) '(new))
+                         " = "
+                         (number->string d))
+                        details))
+                (vector-set! row j d)
+                (when (< d min-dist)
+                  (set! min-dist d)
+                  (set! min-dist-pair (cons i j)))))
             (iota i))))
       (iota n))
 
-    (partition-distance (car min-dist-pair) min-dist)))
+    (partition-distance (car min-dist-pair) min-dist details)))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 ;;
@@ -4918,9 +4965,11 @@
                         (loop2 (+ row 1)
                                width))
                       (loop2 (+ row 1)
-                             (max width
-                                  (string-length
-                                   (format-concatenate cell))))))
+                             (if (char? cell)
+                                 width
+                                 (max width
+                                      (string-length
+                                       (format-concatenate cell)))))))
                 (loop1 (- col 1)
                        (cons width widths))))
           (let loop3 ((col 0) (pos 0) (widths widths))
@@ -4959,11 +5008,13 @@
                         (loop5 (+ col span)))
                       (let* ((span
                               1)
-                             (text
-                              (format-concatenate cell))
                              (width
                               (- (stretchable-vector-ref start (+ col span))
-                                 (stretchable-vector-ref start col))))
+                                 (stretchable-vector-ref start col)))
+                             (text
+                              (if (char? cell)
+                                  (make-string width cell)
+                                  (format-concatenate cell))))
                         (output text width port)
                         (loop5 (+ col span)))))
                 (begin
