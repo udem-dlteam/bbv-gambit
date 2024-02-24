@@ -2202,12 +2202,16 @@
          (env (node-env node)))
     (if env (version-limit env) 0)))
 
+(define (show-version-history-of-lbl lbl)
+  #t #;
+  (and (>= lbl 52) (<= lbl 52))) ;; filter these labels
+
 (define (bbs-type-specialize* bbs)
 
 ;;  (define column-sep "\x23b9;") ;; for display of history of versions
   (define column-sep ":") ;; for display of history of versions
 
-  (define details-sep #\_) ;; for display of history of versions
+  (define details-sep #\_) ;; for separating details in history of versions
 
   (define tctx (make-tctx))
 
@@ -2447,7 +2451,7 @@
         (table-set! version-types-table lbl types))
 
       (define (track-version-history lbl operation) ;; track history of versions
-        (if track-version-history?
+        (if (and track-version-history? (show-version-history-of-lbl lbl))
             (let* ((bb (lbl-num->bb lbl bbs))
                    (label (bb-label-instr bb))
                    (frame (gvm-instr-frame label))
@@ -3249,7 +3253,7 @@
          (let* ((port (current-output-port))
                 (lbl (bb-lbl-num bb))
                 (bb-versions (table-ref versions lbl #f)))
-           (if bb-versions
+           (if (and bb-versions (show-version-history-of-lbl lbl))
                (let ((text-grid (vector-ref bb-versions 2)))
                  (display "-------------------------------------------------------------------------------\n" port)
                  (text-grid-set! text-grid 0 (text-grid-cols text-grid) column-sep)
@@ -3385,6 +3389,60 @@
 (define (types-distance-entropy tctx types1 types2) (make-types-distance-with-norm norm1 entropy-difference tctx types1 types2))
 (define (types-distance-linear tctx types1 types2) (make-types-distance-with-norm norm1 linear-type-distance tctx types1 types2))
 
+(define (types-distance-feeley tctx types1 types2)
+
+  (declare (generic))
+
+  (define single-type-specificity 31)
+
+  (define (specificity type)
+    ;; returns an integer indicating how specific that type is
+    ;; roughly speaking the log2 of the cardinality of the possible values
+    ;; the whole fixnum range counts as 31
+    ;; other types count as 31
+    ;; 0 is the most specific (a singleton type), 1 means 2 possible values, etc
+    (if (type-singleton? type)
+        0
+        (let* ((t (type-motley-force tctx type))
+               (fixnum-range (type-fixnum-range-numeric tctx t))
+               (lo (type-fixnum-range-lo fixnum-range))
+               (hi (type-fixnum-range-hi fixnum-range))
+               (n (if (>= hi lo)
+                      (integer-length (+ 1 (- hi lo)))
+                      0)))
+          (+ n
+             (* single-type-specificity
+                (bit-count
+                 (bitwise-and (- (expt 2 30) 1)
+                              (bitwise-ior (type-motley-mut-bitset t)
+                                           (type-motley-not-mut-bitset t)))))))))
+
+  (define (specificity-of-types types)
+    (let ((len (vector-length types1)))
+      (let loop ((i locenv-start-regs) (acc 0) (n 0))
+        (if (< i len)
+            (let* ((type (vector-ref types (+ i 1)))
+                   (spec (specificity type)))
+              (loop (+ i locenv-entry-size) (+ acc spec) (+ n 1)))
+            (quotient acc n)))))
+
+  (define (usefulness-of-types types)
+    ;; 0 is the most useful (a single type)
+    (abs (- (specificity-of-types types)
+            single-type-specificity)))
+
+  (let* ((len (vector-length types1))
+         (ut1 (usefulness-of-types types1))
+         (ut2 (usefulness-of-types types2)))
+    (let loop ((i locenv-start-regs) (acc 0))
+      (if (< i len)
+          (let* ((type1 (vector-ref types1 (+ i 1)))
+                 (type2 (vector-ref types2 (+ i 1)))
+                 (ltd (linear-type-distance tctx type1 type2))
+                 (dist ltd))
+            (loop (+ i locenv-entry-size) (+ acc dist)))
+          (+ (* acc 100000) (quotient 99999 (+ 1 ut1 ut2)))))))
+
 (define types-distance #f)
 
 (define (set-bbv-merge-strategy! opt)
@@ -3392,7 +3450,8 @@
     (case opt
       ((entropy) types-distance-entropy)
       ((sametypes) types-distance-sametypes)
-      ((linear #f) types-distance-linear)
+      ((linear) types-distance-linear)
+      ((feeley #f) types-distance-feeley)
       (else (error "unknown bbv-merge-strategy strategy" opt)))))
 
 (define (find-merge-candidates tctx types-lbl-vect)
@@ -3428,14 +3487,15 @@
               (let* ((ti (vector-ref types-lbl-vect i))
                      (tj (vector-ref types-lbl-vect j))
                      (d (types-distance tctx (car ti) (car tj))))
-                (set! details
-                  (cons (string-append
-                         (format-gvm-lbl (cdr ti) '(new))
-                         " "
-                         (format-gvm-lbl (cdr tj) '(new))
-                         " = "
-                         (number->string d))
-                        details))
+                (if track-version-history?
+                    (set! details
+                      (cons (string-append
+                             (format-gvm-lbl (cdr ti) '(new))
+                             " "
+                             (format-gvm-lbl (cdr tj) '(new))
+                             " = "
+                             (number->string d))
+                            details)))
                 (vector-set! row j d)
                 (when (< d min-dist)
                   (set! min-dist d)
