@@ -6587,20 +6587,26 @@
     (else (error "cannot write to" target))))
 
 (define (RTE-ref rte target #!key (safe #t))
-  (let ((result
-          (cond
-            ((reg? target) (RTE-registers-ref rte (reg-num target)))
-            ((stk? target) (RTE-frame-ref rte (stk-num target)))
-            ((glo? target) (RTE-global-ref rte (glo-name target)))
-            ((clo? target) (Closure-ref (RTE-ref rte (clo-base target)) (clo-index target)))
-            ((obj? target) (obj-val target))
-            ((lbl? target)
-              (let ((state (RTE-state rte)))
-                (make-Label (InterpreterState-bbs state) (lbl-num target))))
-            (else (error "cannot read from" target)))))
-    (if (and safe (eq? result empty-stack-slot))
-        (InterpreterState-raise-error (RTE-state rte) "reading empty slot")
-        result)))
+  (with-exception-catcher
+    (lambda (e)
+      (if (unbound-key-exception? e)
+        (InterpreterState-raise-error (RTE-state rte) (unbound-key-exception-arguments e))
+        (raise e)))
+    (lambda ()
+      (let ((result
+              (cond
+                ((reg? target) (RTE-registers-ref rte (reg-num target)))
+                ((stk? target) (RTE-frame-ref rte (stk-num target)))
+                ((glo? target) (RTE-global-ref rte (glo-name target)))
+                ((clo? target) (Closure-ref (RTE-ref rte (clo-base target)) (clo-index target)))
+                ((obj? target) (obj-val target))
+                ((lbl? target)
+                  (let ((state (RTE-state rte)))
+                    (make-Label (InterpreterState-bbs state) (lbl-num target))))
+                (else (error "cannot read from" target)))))
+        (if (and safe (eq? result empty-stack-slot))
+            (InterpreterState-raise-error (RTE-state rte) "reading empty slot")
+            result)))))
 
 (define-type Stack
   frame-pointer
