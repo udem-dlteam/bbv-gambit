@@ -5676,20 +5676,21 @@
             (iota n-slots 1)
             (iota n-slots (+ locenv-start-regs (* 2 n-registers) 1) 2))))))
 
+(define (interpret-procedure? x)
+  (or (proc-obj? x)
+      (Closure? x)
+      (and (Label? x)
+            (eq? (bb-label-kind (lbl-num->bb (Label-id x) (Label-bbs x)))
+                'entry))))
+
+(define (interpret-vector? x) (and (vector? x) (not (proc-obj? x))))
+
 (define (assert-types state instr)
   (define assert? (InterpreterState-assert-types? state))
   (define tctx (make-tctx))
   (define rte (InterpreterState-rte state))
   (define bb (InterpreterState-bb state))
   (define (is-value? x) (lambda (y) (eq? x y)))
-
-  (define (interpret-procedure? x)
-    (or (proc-obj? x)
-        (Closure? x)
-        (and (Label? x)
-             (eq? (bb-label-kind (lbl-num->bb (Label-id x) (Label-bbs x)))
-                  'entry))))
-  (define (interpret-vector? x) (and (vector? x) (not (proc-obj? x))))
 
   (define bits-to-checker
     (list
@@ -6064,13 +6065,31 @@
          (target (copy-loc instr)))
     (RTE-set! rte target value)))
 
+(define (make-Interpreter-custom-inlinable-primitives)
+  (define t (make-table test: eq?))
+
+  (define (add! name p)
+    (table-set! t name p))
+
+  (add!
+    '##first-argument
+    (lambda (first . rest) (if (null? rest) first (car rest)))) ;; hack for bbv benchmarks
+
+
+  (add! '##procedure? interpret-procedure?)
+
+  (add! '##vector? interpret-vector?)
+
+  t)
+
+(define Interpreter-custom-inlinable-primitives (make-Interpreter-custom-inlinable-primitives))
+
 (define (InterpreterState-apply-inlinable-primitive state name args)
   (define (try-eval sexp) (with-exception-handler (lambda (exc) #f) (lambda () (eval sexp))))
   (define sym-name (string->symbol name))
 
-  (let ((prim (if (eq? sym-name '##first-argument)
-                  (lambda (first . rest) (if (null? rest) first (car rest))) ;; hack for bbv benchmarks
-                  (try-eval sym-name))))                                     ;; remove once done
+  (let ((prim (or (table-ref Interpreter-custom-inlinable-primitives sym-name #f)
+                  (try-eval sym-name))))
     (if (not prim) (InterpreterState-raise-error state "unknown primitive" name))
     (InterpreterState-primitive-counter-increment state sym-name)
     (apply prim args)))
