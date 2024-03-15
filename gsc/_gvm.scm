@@ -2331,8 +2331,7 @@
       (let ((new-lbl (bbs-new-lbl! new-bbs)))
         (orig-lbl-mapping-set! new-lbl orig-lbl)
         new-lbl))
-
-    (define update-reachability-required? #f)
+    (define (new-lbl? lbl bbs) (not (lbl-num->bb lbl bbs)))
 
     (define reachable-table (make-table))
     (define (reachability-set! lbl r)
@@ -2412,7 +2411,7 @@
                     (lambda (types-lbl)
                       (let ((types (car types-lbl))
                             (lbl (replacement-lbl-num (cdr types-lbl))))
-                        (if (not (lbl-num->bb lbl new-bbs))
+                        (if (new-lbl? lbl new-bbs)
                             (queue-put! work-queue (make-queue-task bb lbl)))))
                     (vector-ref bb-versions 0))))))
         bbs))
@@ -3159,6 +3158,17 @@
         (sort-versions (cons (cons types lbl) types-lbl-alist)))
 
       (define (merge bb)
+        (define (must-recompute-reachability? versions-to-merge merge-result)
+          ;; Reachability must be recomputed unless one of the following is true for ALL merged version:
+          ;;  1) The merged version is new, it has not been walked yet and so has no children
+          ;;  2) The merged version is the version resulting from the merge
+          (let loop ((versions versions-to-merge))
+            (cond
+              ((null? versions) #f)
+              ((eq? (car versions) merge-result) (loop (cdr versions)))
+              ((new-lbl? (car versions) new-bbs) (loop (cdr versions)))
+              (else #t))))
+
         (let* ((lbl (bb-lbl-num bb))
                (bb-versions (get-or-init-versions bb))
                (types-lbl-alist (vector-ref bb-versions 0))
@@ -3201,10 +3211,16 @@
 
           (track-version-history lbl (list 'merge #f details)) ;; track history of versions
 
-          (queue-put! work-queue (make-queue-task bb new-lbl))
-
+          (if (new-lbl? new-lbl new-bbs)
+              (queue-put! work-queue (make-queue-task bb new-lbl)))
+          
           ;; update reachability
-          (bbs-cleanup)))
+          (for-each
+            (lambda (lbl) (reachability-set! lbl #f))
+            (map cdr versions-to-merge))
+          (reachability-set! new-lbl #t) ;; order matters since the result could be in the versions to merge
+
+          (if (must-recompute-reachability? (map cdr versions-to-merge) new-lbl) (bbs-cleanup))))
 
       (let* ((entry-lbl
               (bbs-entry-lbl-num bbs))
@@ -3229,8 +3245,9 @@
             
             (if (not (queue-empty? work-queue)) (loop)))))
               
-        (bbs-cleanup)
-        (all-reachables-exist?))
+        ;(bbs-cleanup)
+        ;(all-reachables-exist?)
+      )
 
   (define (finalize)
 
