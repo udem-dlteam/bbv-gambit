@@ -702,6 +702,10 @@
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+(define profile-with-statprof #f)
+
+(##include "../gsc/statprof.scm")
+
 (define (compile-parsed-program module-ref program env c-intf info-port)
   (let* ((main-proc-name
           (string-append (symbol->string module-ref) "#"))
@@ -743,6 +747,8 @@
 
     (restore-context
      (make-context 0 '() (list ret-var) '() (entry-poll) #f))
+
+    (if profile-with-statprof (statprof-begin))
 
     (for-each
      (lambda (ptree)
@@ -886,6 +892,8 @@
       (set! known-procs '())
 
       (clear-context)
+
+      (if profile-with-statprof (statprof-end "./gsc-profile"))
 
       (cons main-proc
             (reverse

@@ -7,6 +7,7 @@
 (##declare
   (standard-bindings)
   (fixnum)
+  ;(debug) (debug-source) (debug-location) ;; uncomment for profiling with statprof
 )
 
 (##define-macro (include-adt filename)
