@@ -2307,8 +2307,6 @@
                 (cdr lst))
           types)))
 
-  (define step-count 0)
-
   (define nb-versions (make-table))
 
   (define (make-bbvctx types) (vector types 0 '())) ;; TODO: cost and path deprecated?
@@ -2376,70 +2374,40 @@
       (set! reachable-table (make-table))
 
       ;; DFS through CFG references
-      (let* ((entry-lbl (bbs-entry-lbl-num bbs))
-             (bb-versions (table-ref versions entry-lbl #f)))
-        (if bb-versions
-            (let visit ((lbl (bbs-entry-lbl-num new-bbs)))
-                (if (not (reachable? lbl)) ;; not visited
-                    (let* ((bb (lbl-num->bb lbl new-bbs)))
-                      (reachability-set! lbl #t)
-                      (if bb
-                        (let ((refs (map replacement-lbl-num (bb-references bb))))
-                          (for-each visit refs))))))))
+      (let visit ((lbl (bbs-entry-lbl-num new-bbs)))
+        (if (not (reachable? lbl)) ;; not visited
+            (let* ((bb (lbl-num->bb lbl new-bbs)))
+              (reachability-set! lbl #t)
+              (if bb
+                  (let ((refs (map replacement-lbl-num (bb-references bb))))
+                    (for-each visit refs))))))
 
       ;; remove unreachable versions from live versions of all blocks
       (bbs-for-each-bb
         (lambda (bb)
-          (let ((orig-lbl (bb-lbl-num bb))
-                (bb-versions (table-ref versions (bb-lbl-num bb) #f)))
-            (if bb-versions
-                (let ((changed? #f))
-                  ;; remove unreachable versions from live bb versions
-                  (vector-set!
-                    bb-versions
-                    0
-                    (filter
-                     (lambda (types-lbl)
-                       (let ((r (reachable? (cdr types-lbl))))
-                         (if (not r) (set! changed? #t))
-                         r))
-                     (vector-ref bb-versions 0)))
-                  (if changed?
-                      (track-version-history orig-lbl '(gc #f))) ;; track history of versions
-                  ;; add back newly reachable versions to be processed
-                  (for-each
-                    (lambda (types-lbl)
-                      (let ((types (car types-lbl))
-                            (lbl (replacement-lbl-num (cdr types-lbl))))
-                        (if (new-lbl? lbl new-bbs)
-                            (queue-put! work-queue (make-queue-task bb lbl)))))
-                    (vector-ref bb-versions 0))))))
+          (let* ((orig-lbl (bb-lbl-num bb))
+                 (bb-versions (get-bb-versions-from-lbl orig-lbl))
+                 (changed? (bb-versions-active-lbl-remove-unreachable! bb-versions)))
+            ;; remove unreachable versions from live bb versions
+            (if changed? (track-version-history orig-lbl '(gc #f))) ;; track history of versions
+            ;; add back newly reachable versions to be processed
+            (bb-versions-active-lbl-for-each
+              (lambda (types lbl)
+                (if (new-lbl? lbl new-bbs)
+                    (queue-put! work-queue (make-queue-task bb lbl))))
+              bb-versions)))
         bbs))
 
       (define (bbs-cleanup)
+        (update-reachability!)
+
         ;; remove unreachable bb
         ;; required to avoid having uninitialized bb in the bbs
-        ;; (write (list 'GC-REACHABILITY))(newline)
-        (update-reachability!)
         (bbs-for-each-bb
           (lambda (bb)
             (let ((lbl (bb-lbl-num bb)))
               (if (not (reachable? lbl)) (bbs-bb-remove! new-bbs lbl))))
-          new-bbs)
-        
-        (bbs-for-each-bb
-          (lambda (bb)
-            (let* ((lbl (bb-lbl-num bb))
-                   (bb-versions (table-ref versions lbl #f)))
-              (if bb-versions
-                  (let* ((types-lbl-alist (vector-ref bb-versions 0))
-                         (reachable-versions
-                           (filter
-                             (lambda (p) (reachable? (replacement-lbl-num (cdr p))))
-                             types-lbl-alist)))
-                    ;; remove unreachable versions from bb
-                    (vector-set! bb-versions 0 reachable-versions)))))
-        bbs))
+          new-bbs))
 
       (define version-types-table (make-table))
 
@@ -2455,9 +2423,9 @@
                    (label (bb-label-instr bb))
                    (frame (gvm-instr-frame label))
                    (bb-versions (table-ref versions lbl))
-                   (types-lbl-alist (vector-ref bb-versions 0))
-                   (text-grid (vector-ref bb-versions 2))
-                   (version-index-tbl (vector-ref bb-versions 3))
+                   (types-lbl-alist (bb-versions-active-lbl->list bb-versions sort?: #t))
+                   (text-grid (bb-versions-text-grid bb-versions))
+                   (version-index-tbl (bb-versions-index-table bb-versions))
                    (options '(brief new))
                    (col (max 1 (text-grid-cols text-grid)))
                    (op (car operation))
@@ -2587,37 +2555,26 @@
                              (label-entry-rest? label)))
                     (generic-entry-frame-types frame)
                     (resized-frame-types-remove-dead frame types-before)))
-               (bb-versions (get-or-init-versions bb))
-               (types-lbl-alist (vector-ref bb-versions 0))
-               (all-versions-tbl (vector-ref bb-versions 1))
-               (old-existing-version (table-ref all-versions-tbl types-before #f))
-               (existing-version (and old-existing-version
-                                      (replacement-lbl-num old-existing-version)))
-               (types-for-version (if existing-version (get-version-types existing-version) types-before))
-               (existing-version-is-live?
-                 (and existing-version
-                      (memv existing-version (map cdr types-lbl-alist)))))
+               (bb-versions (get-bb-versions bb))
+               (old-version (bb-versions-all-lbl-get bb-versions types-before))
+               (most-recent-version
+                  (and old-version
+                       (replacement-lbl-num old-version)))
+               (version-types
+                  (if most-recent-version
+                      (get-version-types most-recent-version)
+                      types-before))
+               (version-is-live?
+                 (and most-recent-version
+                      (bb-versions-active-lbl-get bb-versions version-types))))
 
-          (if existing-version-is-live?
-              existing-version
-              (let* ((bb (lbl-num->bb lbl bbs))
-                     (new-lbl (or existing-version (new-lbl! lbl)))
-                     (step-num (begin (set! step-count (+ 1 step-count)) step-count))
-                     (new-types-lbl-alist
-                      (extend-types-lbl-alist types-lbl-alist types-for-version new-lbl)))
-
-                (set-version-types! new-lbl types-for-version)
-
-                (table-set! all-versions-tbl types-for-version new-lbl)
-
-                (vector-set! bb-versions 0 new-types-lbl-alist)
-
+          (if version-is-live?
+              most-recent-version
+              (let* ((new-lbl (or most-recent-version (new-lbl! lbl))))
+                (bb-versions-active-lbl-add! bb-versions version-types new-lbl)
                 (track-version-history lbl (list 'add from-lbl)) ;; track history of versions
-
                 (queue-put! work-queue (make-queue-task bb new-lbl))
-
                 (reachability-set! new-lbl #t)
-
                 new-lbl))))
 
       (define (walk-bb bb types-before new-lbl)
@@ -3131,31 +3088,65 @@
                        (walk-instr (bb-branch-instr bb) types-before)))
                   (bb-put-branch! new-bb new-instr))))))
 
-      (define (get-or-init-versions bb)
-        (let ((lbl (bb-lbl-num bb)))
-          (or (table-ref versions lbl #f)
-              (let ((bb-versions
-                      (if track-version-history?
-                          (vector '()
-                                  (make-table test: locenv-eqv?)
-                                  (make-text-grid)
-                                  (make-table))
-                          (vector '()
-                                  (make-table test: locenv-eqv?)))))
-                (table-set! versions lbl bb-versions)
-                bb-versions))))
+      (define (get-bb-versions bb)
+        (get-bb-versions-from-lbl (bb-lbl-num bb)))
+
+      (define (get-bb-versions-from-lbl lbl)
+        (or (table-ref versions lbl #f)
+            (let ((bb-versions
+                    (if track-version-history?
+                        (vector (make-table test: locenv-eqv?)
+                                (make-table test: locenv-eqv?)
+                                (make-text-grid)
+                                (make-table))
+                        (vector (make-table test: locenv-eqv?)
+                                (make-table test: locenv-eqv?)))))
+              (table-set! versions lbl bb-versions)
+              bb-versions)))
+      
+      (define (bb-versions-active-lbl-get bb-versions types-before)
+        (table-ref (vector-ref bb-versions 0) types-before #f))
+      (define (bb-versions-active-lbl-remove! bb-versions types-before)
+        (table-set! (vector-ref bb-versions 0) types-before))
+      (define (bb-versions-active-lbl-add! bb-versions types-before version-lbl)
+        (bb-versions-all-lbl-add! bb-versions types-before version-lbl)
+        (table-set! (vector-ref bb-versions 0) types-before version-lbl))
+      (define (bb-versions-active-lbl->list bb-versions #!key (sort? use-directional-widening?))
+        (if sort?
+            (list-sort (lambda (v1 v2) (< (cdr v1) (cdr v2)))
+                  (table->list (vector-ref bb-versions 0)))
+            (table->list (vector-ref bb-versions 0))))
+      (define (bb-versions-active-lbl-for-each f bb-versions)
+        (table-for-each f (vector-ref bb-versions 0)))
+      (define (bb-versions-active-lbl-length bb-versions)
+        (table-length (vector-ref bb-versions 0)))
+      (define (bb-versions-active-lbl-remove-unreachable! bb-versions)
+        (define changed? #f)
+        (for-each
+          (lambda (type-lbl)
+            (if (not (reachable? (replacement-lbl-num (cdr type-lbl))))
+                (begin
+                  (set! changed? #t)
+                  (bb-versions-active-lbl-remove! bb-versions (car type-lbl)))))
+          (bb-versions-active-lbl->list bb-versions))
+        changed?)
+
+      (define (bb-versions-all-lbl-get bb-versions types-before)
+        (table-ref (vector-ref bb-versions 1) types-before #f))
+      (define (bb-versions-all-lbl-add! bb-versions types-before version-lbl)
+        (set-version-types! version-lbl types-before)
+        (table-set! (vector-ref bb-versions 1) types-before version-lbl))
+
+      (define (bb-versions-text-grid bb-versions)
+        (vector-ref bb-versions 2))
+
+      (define (bb-versions-index-table bb-versions)
+        (vector-ref bb-versions 3))
 
       (define (need-merge? bb)
         (let* ((lbl (bb-lbl-num bb))
-               (bb-versions (get-or-init-versions bb))
-               (types-lbl-alist (vector-ref bb-versions 0)))
-          (> (length types-lbl-alist) (max 1 (bb-version-limit bb)))))
-
-      (define (sort-versions types-lbl-alist)
-          (list-sort (lambda (v1 v2) (< (cdr v1) (cdr v2))) types-lbl-alist))
-
-      (define (extend-types-lbl-alist types-lbl-alist types lbl)
-        (sort-versions (cons (cons types lbl) types-lbl-alist)))
+               (bb-versions (get-bb-versions bb)))
+          (> (bb-versions-active-lbl-length bb-versions) (max 1 (bb-version-limit bb)))))
 
       (define (merge bb)
         (define (must-recompute-reachability? versions-to-merge merge-result)
@@ -3170,10 +3161,8 @@
               (else #t))))
 
         (let* ((lbl (bb-lbl-num bb))
-               (bb-versions (get-or-init-versions bb))
-               (types-lbl-alist (vector-ref bb-versions 0))
-               (all-versions-tbl (vector-ref bb-versions 1))
-               (types-lbl-vect (list->vector types-lbl-alist))
+               (bb-versions (get-bb-versions bb))
+               (types-lbl-vect (list->vector (bb-versions-active-lbl->list bb-versions)))
                (in-out-details (find-merge-candidates tctx types-lbl-vect))
                (in (vector-ref in-out-details 0))
                (out (vector-ref in-out-details 1))
@@ -3181,15 +3170,14 @@
                (versions-to-merge (map (lambda (i) (vector-ref types-lbl-vect i)) in))
                (versions-to-keep (map (lambda (i) (vector-ref types-lbl-vect i)) out))
                (merged-types (types-merge-multi (map car versions-to-merge) #t))
-               (existing-lbl-of-merged-type (table-ref all-versions-tbl merged-types #f))
+               (existing-lbl-of-merged-type 
+                  (bb-versions-all-lbl-get bb-versions merged-types))
                (new-lbl (or (and existing-lbl-of-merged-type
-                                  (replacement-lbl-num existing-lbl-of-merged-type))
+                                 (replacement-lbl-num existing-lbl-of-merged-type))
                              (new-lbl! lbl)))
                (merged-types (if (not existing-lbl-of-merged-type)
                                  merged-types
                                  (get-version-types new-lbl))))
-
-          (set-version-types! new-lbl merged-types)
 
           (for-each
             (lambda (types-lbl)
@@ -3198,16 +3186,10 @@
                 (table-set! lbl-mapping lbl new-lbl)))
             versions-to-merge)
 
-          (table-set! all-versions-tbl merged-types new-lbl)
-
-          (vector-set!
-            bb-versions
-            0
-            ;; versions must always be sorted by age, lower labels first
-            ;; so type-union knowns the direction of loops
-            ;; it's not sufficient to add new versions at the end since
-            ;; a merge can result in an existing version
-            (extend-types-lbl-alist versions-to-keep merged-types new-lbl))
+          (for-each
+            (lambda (type-lbl) (bb-versions-active-lbl-remove! bb-versions (car type-lbl)))
+            versions-to-merge)
+          (bb-versions-active-lbl-add! bb-versions merged-types new-lbl)
 
           (track-version-history lbl (list 'merge #f details)) ;; track history of versions
 
