@@ -123,7 +123,7 @@
     (else ;; forward edge may reduce the rank of some nodes
       (let ((dirty-queue (make-queue)))
         (define (hoist new-parent node)
-          (let ((old-parent (get-parent tree to)))
+          (let ((old-parent (get-parent tree node)))
             ;; set new parent
             (set-parent! tree node new-parent)
             ;; if node was a friend of new-parent remove the relation
