@@ -215,37 +215,90 @@
 
 ;; tests
 
-(define (test)
-  (define tree (make-BFSTree 0))
+(define (make-test-graph source)
+  (list->table (list (cons source '()) (cons 'source source))))
+(define (test-graph-add! graph from to)
+  (table-set! graph from (cons to (table-ref graph from '()))))
+(define (test-graph-remove! graph from to)
+  (table-set! graph from (filter (lambda (x) (not (= x to))) (table-ref graph from '()))))
+(define (test-graph-rank graph target)
+  (let ((queue (make-queue))
+        (visited '())
+        (source (table-ref graph 'source)))
+    (queue-put! queue (cons 0 source))
+    (set! visited (cons source visited))
+    (let loop ()
+      (if (queue-empty? queue)
+        infinity
+        (let* ((rank-node (queue-get! queue))
+               (rank (car rank-node))
+               (node (cdr rank-node))
+               (children (table-ref graph node '())))
+          (if (= node target)
+              rank
+              (begin
+                (for-each
+                  (lambda (child)
+                    (when (not (memq child visited))
+                      (queue-put! queue (cons (+ rank 1) child))
+                      (set! visited (cons child visited))))
+                  children)
+                (loop))))))))
 
-  ;; make a long chain
-  (add-edge! tree 0 1)
-  (add-edge! tree 1 2)
-  (add-edge! tree 2 3)
-  (add-edge! tree 3 4)
+(define make-graph (make-parameter #f))
+(define add!       (make-parameter #f))
+(define delete!    (make-parameter #f))
+(define rank-of    (make-parameter #f))
 
-  ;; make a diamond segment at the end of the chain
-  (add-edge! tree 4 5)
-  (add-edge! tree 4 6)
-  (add-edge! tree 5 7)
-  (add-edge! tree 6 7)
+(define seed
+  (let ((rs (make-random-source)))
+    (random-source-randomize! rs)
+    (random-source-state-ref rs)))
 
-  ;; make a loop
-  (add-edge! tree 7 1)
+(define (fuzzy-test)
+  (define N 10)
+  (define repetitions 25)
+  (define graph ((make-graph) 0))
+  (define nodes (iota N))
+  (define instructions '())
+  (define random-source (make-random-source))
+  (define randint (random-source-make-integers random-source))
+  (random-source-state-set! random-source seed)
 
-  ;; short-circuit the chain
-  (add-edge! tree 0 5)
+  (for-each
+    (lambda (_)
+      (let ((kind (randint 5))
+            (source (randint N))
+            (target (randint N)))
+          (if (> kind 0)
+              (begin
+                (set! instructions (cons (list 'add! source target) instructions))
+                ((add!) graph source target))
+              (begin
+                (set! instructions (cons (list 'delete! source target) instructions))
+                ((delete!) graph source target)))))
+    (iota repetitions))
 
-  (let ((ranks (map (lambda (n) (get-rank tree n)) (iota 8)))
-        (expected-ranks '(0 1 2 3 4 1 5 2)))
-    (if (equal? ranks expected-ranks)
-        (pp 'OK)
-        (begin
-          (pp 'FAILED)
-          (pp ranks))))
-        
-  (remove-edge! tree 0 5)
-  (remove-edge! tree 2 3)
-  (pp (map (lambda (n) (get-rank tree n)) (iota 8))))
+  (cons
+    instructions
+    (map (lambda (n) ((rank-of) graph n)) (iota N))))
 
-(test)
+(let ((expected-result
+        (parameterize ((make-graph make-test-graph)
+                       (add! test-graph-add!)
+                       (delete! test-graph-remove!)
+                       (rank-of test-graph-rank))
+          (fuzzy-test)))
+      (result
+        (parameterize ((make-graph make-BFSTree)
+                       (add! add-edge!)
+                       (delete! remove-edge!)
+                       (rank-of get-rank))
+      (fuzzy-test))))
+  (if (equal? expected-result result)
+      (pp 'OK)
+      (pp 'FAILED))
+  (pp 'OUTPUT:)
+  (pp (cdr result))
+  (pp 'EXPECTED:)
+  (pp (cdr expected-result)))
