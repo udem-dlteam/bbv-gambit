@@ -80,11 +80,6 @@
 
 (define (get-parent tree x)
   (table-ref (BFSTree-parents tree) x #f))
-(define (get-children tree x)
-  (table-ref-or-set-default! (BFSTree-children tree) x))
-(define (get-friends tree x)
-  (table-ref-or-set-default! (BFSTree-friends tree) x))
-
 (define (set-parent! tree child parent)
   ;; remove old parent
   (let ((old-parent (get-parent tree child)))
@@ -96,17 +91,20 @@
   (table-set! (BFSTree-parents tree) child parent)
   ;; add child to parent
   (set-add! (table-ref-or-set-default! (BFSTree-children tree) parent) child))
+(define (get-children tree x)
+  (table-ref-or-set-default! (BFSTree-children tree) x))
 
 (define (add-friend! tree node friend)
   (set-add! (table-ref-or-set-default! (BFSTree-friends tree) node) friend))
-
-(define (valid-BFS-edge? tree from to)
-  (let ((rank-from (get-rank tree from))
-        (rank-to (get-rank tree to)))
-    (>= rank-from (- rank-to 1))))
-
 (define (remove-friend! tree node friend)
   (set-remove! (table-ref-or-set-default! (BFSTree-friends tree) node) friend))
+(define (get-friends tree x)
+  (table-ref-or-set-default! (BFSTree-friends tree) x))
+
+(define (clean-edge? tree from to)
+  (>= (get-rank tree from) (- (get-rank tree to) 1)))
+(define (dirty-edge? tree from to)
+  (not (clean-edge? tree from to)))
 
 (define (children-for-each f tree x)
   (set-for-each f (table-ref-or-set-default! (BFSTree-children tree) x)))
@@ -118,10 +116,12 @@
 
 (define (source? tree x)
   (= (BFSTree-source tree) x))
+(define (parent? tree x p)
+  (eq? p (get-parent tree x)))
 
 (define (add-edge! tree from to)
   (cond
-    ((valid-BFS-edge? tree from to) ;; adding this edge cannot lower rank
+    ((clean-edge? tree from to) ;; adding this edge cannot lower rank
       (add-friend! tree from to))
     (else ;; forward edge may reduce the rank of some nodes
       (let ((dirty-queue (make-queue)))
@@ -140,7 +140,7 @@
             ;; and mark them as dirty to be fixed later
             (edges-for-each
               (lambda (x)
-                (when (not (valid-BFS-edge? tree node x))
+                (when (dirty-edge? tree node x)
                   (queue-put! dirty-queue (list node x))))
               tree
               node)))
