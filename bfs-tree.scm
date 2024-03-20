@@ -22,6 +22,7 @@
 (define (set-remove! set x) (table-set! set x))
 (define (set-contains? set x) (table-ref set x #f))
 (define (set-for-each f set) (table-for-each (lambda (k _) (f k)) set))
+(define (set-search f set) (table-search (lambda (k _) (f k)) set))
 (define (set->list set) (map car (table->list set)))
 
 (define (table-ref-or-set-default! table x)
@@ -37,13 +38,15 @@
     (list->table (list (cons source 0)))    ;; ranks table
     (make-table)                            ;; parents table
     (make-table)                            ;; children table
-    (make-table)))                          ;; friends table
+    (make-table)                            ;; friends table
+    (make-table)))                          ;; friendlies table
 
 (define (BFSTree-source tree) (vector-ref tree 0))
 (define (BFSTree-ranks tree) (vector-ref tree 1))
 (define (BFSTree-parents tree) (vector-ref tree 2))
 (define (BFSTree-children tree) (vector-ref tree 3))
 (define (BFSTree-friends tree) (vector-ref tree 4))
+(define (BFSTree-friendlies tree) (vector-ref tree 5))
 
 ;;   Parent P of X
 ;;   P -> X where rank(X) = rank(P) + 1
@@ -73,33 +76,42 @@
   (table-set! (BFSTree-ranks tree) x rank))
 (define (update-rank! tree x)
   (let* ((parent (get-parent tree x))
-         (parent-rank (get-rank tree parent))
-         (rank (+ parent-rank 1)))
-    (set-rank! tree x rank)
-    rank))
+         (parent-rank (if parent (get-rank tree parent) infinity))
+         (old-rank (get-rank tree x))
+         (new-rank (+ parent-rank 1)))
+    (if (= new-rank old-rank) #f (begin (set-rank! tree x new-rank) #t))))
 
 (define (get-parent tree x)
   (table-ref (BFSTree-parents tree) x #f))
+(define (remove-child! tree parent child)
+  (set-remove!
+    (table-ref (BFSTree-children tree) parent)
+    child))
 (define (set-parent! tree child parent)
   ;; remove old parent
   (let ((old-parent (get-parent tree child)))
-    (if old-parent
-      (set-remove!
-        (table-ref (BFSTree-children tree) old-parent)
-        child)))
+    (if old-parent (remove-child! tree old-parent child)))
   ;; set parent for child
   (table-set! (BFSTree-parents tree) child parent)
-  ;; add child to parent
+  ;; add child to new parent
   (set-add! (table-ref-or-set-default! (BFSTree-children tree) parent) child))
+(define (remove-parent! tree child)
+  (let ((parent (get-parent tree child)))
+    (if parent (remove-child! tree parent child)))
+  (table-set! (BFSTree-parents tree) child))
 (define (get-children tree x)
   (table-ref-or-set-default! (BFSTree-children tree) x))
 
 (define (add-friend! tree node friend)
-  (set-add! (table-ref-or-set-default! (BFSTree-friends tree) node) friend))
+  (set-add! (table-ref-or-set-default! (BFSTree-friends tree) node) friend)
+  (set-add! (table-ref-or-set-default! (BFSTree-friendlies tree) friend) node))
 (define (remove-friend! tree node friend)
-  (set-remove! (table-ref-or-set-default! (BFSTree-friends tree) node) friend))
+  (set-remove! (table-ref-or-set-default! (BFSTree-friends tree) node) friend)
+  (set-remove! (table-ref-or-set-default! (BFSTree-friendlies tree) friend) node))
 (define (get-friends tree x)
   (table-ref-or-set-default! (BFSTree-friends tree) x))
+(define (get-friendlies tree x)
+  (table-ref-or-set-default! (BFSTree-friendlies tree) x))
 
 (define (clean-edge? tree from to)
   (>= (get-rank tree from) (- (get-rank tree to) 1)))
@@ -110,9 +122,26 @@
   (set-for-each f (table-ref-or-set-default! (BFSTree-children tree) x)))
 (define (friends-for-each f tree x)
   (set-for-each f (table-ref-or-set-default! (BFSTree-friends tree) x)))
-(define (edges-for-each f tree x)
+(define (neighbors-for-each f tree x)
   (friends-for-each f tree x)
   (children-for-each f tree x))
+(define (friendlies-for-each f tree x)
+  (set-for-each f (table-ref-or-set-default! (BFSTree-friendlies tree) x)))
+
+(define (get-lowest-ranked-incident-node tree x)
+  ;; favor parent in case of tie
+  (let* ((best (get-parent tree x))
+         (best-rank (if best (get-rank tree best) infinity)))
+    (friendlies-for-each
+      (lambda (f)
+        (let ((rank (get-rank tree f)))
+          (when (< rank best-rank)
+            (set! best f)
+            (set! best-rank rank))))
+      tree
+      x)
+    best))
+    
 
 (define (source? tree x)
   (= (BFSTree-source tree) x))
@@ -135,21 +164,53 @@
             ;; node is now a friend of the old parent
             (if old-parent (add-friend! tree old-parent node))
             ;; recompute the rank with this new parent
-            (update-rank! tree node)
-            ;; Search for edges that are now higher ranked
-            ;; and mark them as dirty to be fixed later
-            (edges-for-each
-              (lambda (x)
-                (when (dirty-edge? tree node x)
-                  (queue-put! dirty-queue (list node x))))
-              tree
-              node)))
+            (if (update-rank! tree node)
+              ;; if rank changed
+              ;; Search for edges that are now higher ranked
+              ;; and mark them as dirty to be fixed later
+              (neighbors-for-each
+                (lambda (x)
+                  (when (dirty-edge? tree node x)
+                    (queue-put! dirty-queue (list node x))))
+                tree
+                node))))
 
         (queue-put! dirty-queue (list from to))
 
         (let loop ()
           (when (not (queue-empty? dirty-queue))
             (apply hoist (queue-get! dirty-queue))
+            (loop)))))))
+
+(define (remove-edge! tree from to)
+  (cond
+    ((not (parent? tree to from)) ;; edge not in BFS, can be removed safely
+      (remove-friend! tree from to))
+    (else
+      (let ((dirty-queue (make-queue)))
+        (define (drop node)
+          ;; dirty node rank, parent and friendlies may not match
+          (let ((new-parent (get-lowest-ranked-incident-node tree node)))
+            (when new-parent
+              (remove-friend! tree new-parent node)
+              (set-parent! tree node new-parent))
+
+            (if (update-rank! tree node)
+              ;; the new parent has higher rank, so we mark children
+              ;; to assign them a better parent
+              (children-for-each
+                (lambda (child)
+                  (queue-put! dirty-queue child))
+                tree
+                node))))
+
+        (remove-parent! tree to)
+
+        (queue-put! dirty-queue to)
+
+        (let loop ()
+          (when (not (queue-empty? dirty-queue))
+            (drop (queue-get! dirty-queue))
             (loop)))))))
 
 ;; tests
@@ -181,7 +242,10 @@
         (pp 'OK)
         (begin
           (pp 'FAILED)
-          (pp ranks)))))
+          (pp ranks))))
+        
+  (remove-edge! tree 0 5)
+  (remove-edge! tree 2 3)
+  (pp (map (lambda (n) (get-rank tree n)) (iota 8))))
 
 (test)
-                
