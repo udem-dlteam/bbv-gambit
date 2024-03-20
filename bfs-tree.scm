@@ -100,9 +100,9 @@
 (define (add-friend! tree node friend)
   (set-add! (table-ref-or-set-default! (BFSTree-friends tree) node) friend))
 
-(define (valid-friend? tree from to)
-  (let ((rank-to (get-rank tree to))
-        (rank-from (get-rank tree from)))
+(define (valid-BFS-edge? tree from to)
+  (let ((rank-from (get-rank tree from))
+        (rank-to (get-rank tree to)))
     (>= rank-from (- rank-to 1))))
 
 (define (remove-friend! tree node friend)
@@ -112,13 +112,16 @@
   (set-for-each f (table-ref-or-set-default! (BFSTree-children tree) x)))
 (define (friends-for-each f tree x)
   (set-for-each f (table-ref-or-set-default! (BFSTree-friends tree) x)))
+(define (edges-for-each f tree x)
+  (friends-for-each f tree x)
+  (children-for-each f tree x))
 
 (define (source? tree x)
   (= (BFSTree-source tree) x))
 
 (define (add-edge! tree from to)
   (cond
-    ((valid-friend? tree from to) ;; adding this edge cannot lower rank
+    ((valid-BFS-edge? tree from to) ;; adding this edge cannot lower rank
       (add-friend! tree from to))
     (else ;; forward edge may reduce the rank of some nodes
       (let ((dirty-queue (make-queue)))
@@ -133,17 +136,12 @@
             (if old-parent (add-friend! tree old-parent node))
             ;; recompute the rank with this new parent
             (update-rank! tree node)
-            ;; Search for friends that are now higher ranked
+            ;; Search for edges that are now higher ranked
             ;; and mark them as dirty to be fixed later
-            (friends-for-each
+            (edges-for-each
               (lambda (x)
-                (when (not (valid-friend? tree node x))
+                (when (not (valid-BFS-edge? tree node x))
                   (queue-put! dirty-queue (list node x))))
-              tree
-              node)
-            ;; Do the same for children as they will all decrease rank
-            (children-for-each
-              (lambda (x) (queue-put! dirty-queue (list node x)))
               tree
               node)))
 
