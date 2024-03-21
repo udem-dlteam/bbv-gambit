@@ -10,7 +10,6 @@
       (if (queue-empty? queue) (set-cdr! queue '()))
       x)))
 (define (queue-put! queue x)
-  (pp (list 'queue-put x))
   (let ((entry (cons x '())))
     (if (queue-empty? queue)
       (set-car! queue entry)
@@ -34,7 +33,6 @@
           default))))
 
 (define (make-BFSTree source)
-  (pp (list 'make-BFSTree source))
   (vector
     source                                  ;; source
     (list->table (list (cons source 0)))    ;; ranks table
@@ -83,16 +81,24 @@
          (new-rank (+ parent-rank 1)))
     (if (= new-rank old-rank) #f (begin (set-rank! tree x new-rank) #t))))
 
+;; all access methods are written such that adding an edge will never delete
+;; another edge. However, it can make a node dirty
+(define (add-friend! tree node friend)
+  (set-add! (table-ref-or-set-default! (BFSTree-friends tree) node) friend)
+  (set-add! (table-ref-or-set-default! (BFSTree-friendlies tree) friend) node))
+(define (remove-friend! tree node friend)
+  (set-remove! (table-ref-or-set-default! (BFSTree-friends tree) node) friend)
+  (set-remove! (table-ref-or-set-default! (BFSTree-friendlies tree) friend) node))
 (define (get-parent tree x)
   (table-ref (BFSTree-parents tree) x #f))
-(define (remove-child! tree parent child)
-  (set-remove!
-    (table-ref (BFSTree-children tree) parent)
-    child))
 (define (set-parent! tree child parent)
-  ;; remove old parent
+  ;; change old parent status to friend
   (let ((old-parent (get-parent tree child)))
-    (if old-parent (remove-child! tree old-parent child)))
+    (when old-parent
+      (add-friend! tree old-parent child)
+      (remove-child! tree old-parent child)))
+  ;; if new parent was a friend remove this status
+  (remove-friend! tree parent child)
   ;; set parent for child
   (table-set! (BFSTree-parents tree) child parent)
   ;; add child to new parent
@@ -101,19 +107,10 @@
   (let ((parent (get-parent tree child)))
     (if parent (remove-child! tree parent child)))
   (table-set! (BFSTree-parents tree) child))
-(define (get-children tree x)
-  (table-ref-or-set-default! (BFSTree-children tree) x))
-
-(define (add-friend! tree node friend)
-  (set-add! (table-ref-or-set-default! (BFSTree-friends tree) node) friend)
-  (set-add! (table-ref-or-set-default! (BFSTree-friendlies tree) friend) node))
-(define (remove-friend! tree node friend)
-  (set-remove! (table-ref-or-set-default! (BFSTree-friends tree) node) friend)
-  (set-remove! (table-ref-or-set-default! (BFSTree-friendlies tree) friend) node))
-(define (get-friends tree x)
-  (table-ref-or-set-default! (BFSTree-friends tree) x))
-(define (get-friendlies tree x)
-  (table-ref-or-set-default! (BFSTree-friendlies tree) x))
+(define (remove-child! tree parent child)
+  (set-remove!
+    (table-ref (BFSTree-children tree) parent)
+    child))
 
 (define (clean-edge? tree from to)
   (>= (get-rank tree from) (- (get-rank tree to) 1)))
@@ -129,6 +126,11 @@
   (children-for-each f tree x))
 (define (friendlies-for-each f tree x)
   (set-for-each f (table-ref-or-set-default! (BFSTree-friendlies tree) x)))
+    
+(define (source? tree x)
+  (= (BFSTree-source tree) x))
+(define (parent? tree x p)
+  (eq? p (get-parent tree x)))
 
 (define (get-lowest-ranked-incident-node tree x)
   ;; favor parent in case of tie
@@ -136,57 +138,38 @@
          (best-rank (if best (get-rank tree best) infinity)))
     (friendlies-for-each
       (lambda (f)
-        (let ((rank (get-rank tree f)))
-          (when (< rank best-rank)
-            (set! best f)
-            (set! best-rank rank))))
+        (if (not (= f x)) ;; do not include self
+                          ;; it is either not the best or if it is
+                          ;; then it is the only incident
+          (let ((rank (get-rank tree f)))
+            (when (< rank best-rank)
+              (set! best f)
+              (set! best-rank rank)))))
       tree
       x)
     best))
-    
 
-(define (source? tree x)
-  (= (BFSTree-source tree) x))
-(define (parent? tree x p)
-  (eq? p (get-parent tree x)))
+(define (fix-dirty-node! tree dirty-queue node)
+  (when (not (source? tree node)) ;; source is never dirty
+    (let ((new-parent (get-lowest-ranked-incident-node tree node)))
+      (if new-parent (set-parent! tree node new-parent))
+      (when (update-rank! tree node)
+        (neighbors-for-each
+          (lambda (x) (queue-put! dirty-queue x))
+          tree
+          node)))))
 
 (define (add-edge! tree from to)
-  (pp (list 'add-edge! from to))
   (cond
     ((clean-edge? tree from to) ;; adding this edge cannot lower rank
       (add-friend! tree from to))
     (else ;; forward edge may reduce the rank of some nodes
       (let ((dirty-queue (make-queue)))
-        (define (hoist new-parent node)
-          (pp (list 'hoist new-parent node))
-          (let ((old-parent (get-parent tree node)))
-            ;; first check that the new-parent is still a valid parent
-            (when (or (not old-parent)
-                      (> (get-rank tree old-parent) (get-rank tree new-parent)))
-              ;; set new parent
-              (set-parent! tree node new-parent)
-              ;; if node was a friend of new-parent remove the relation
-              (remove-friend! tree new-parent node)
-              ;; the old parent now has rank higher or equal to node
-              ;; node is now a friend of the old parent
-              (if old-parent (add-friend! tree old-parent node))
-              ;; recompute the rank with this new parent
-              (if (update-rank! tree node)
-                ;; if rank changed
-                ;; Search for edges that are now higher ranked
-                ;; and mark them as dirty to be fixed later
-                (neighbors-for-each
-                  (lambda (x)
-                    (when (dirty-edge? tree node x)
-                      (queue-put! dirty-queue (list node x))))
-                  tree
-                  node)))))
-
-        (queue-put! dirty-queue (list from to))
-
+        (add-friend! tree from to)
+        (queue-put! dirty-queue to)
         (let loop ()
           (when (not (queue-empty? dirty-queue))
-            (apply hoist (queue-get! dirty-queue))
+            (fix-dirty-node! tree dirty-queue (queue-get! dirty-queue))
             (loop)))))))
 
 (define (remove-edge! tree from to)
@@ -195,29 +178,11 @@
       (remove-friend! tree from to))
     (else
       (let ((dirty-queue (make-queue)))
-        (define (drop node)
-          ;; dirty node rank, parent and friendlies may not match
-          (let ((new-parent (get-lowest-ranked-incident-node tree node)))
-            (when new-parent
-              (remove-friend! tree new-parent node)
-              (set-parent! tree node new-parent))
-
-            (if (update-rank! tree node)
-              ;; the new parent has higher rank, so we mark children
-              ;; to assign them a better parent
-              (children-for-each
-                (lambda (child)
-                  (queue-put! dirty-queue child))
-                tree
-                node))))
-
         (remove-parent! tree to)
-
         (queue-put! dirty-queue to)
-
         (let loop ()
           (when (not (queue-empty? dirty-queue))
-            (drop (queue-get! dirty-queue))
+            (fix-dirty-node! tree dirty-queue (queue-get! dirty-queue))
             (loop)))))))
 
 ;; tests
@@ -312,7 +277,7 @@
     (when (< i n)
       (if (run-one-fuzzy-test) (loop (+ i 1))))))
 
-(define (my-test)
+(define (test1)
   (define graph ((make-graph) 0))
   ((add!) graph 1 2)
   ((add!) graph 2 3)
@@ -320,6 +285,24 @@
   ((add!) graph 2 4)
   ((add!) graph 0 1)
   (map (lambda (n) ((rank-of) graph n)) (iota 5)))
+
+(define (test2)
+  (define graph ((make-graph) 0))
+  ((add!) graph 1 2)
+  ((add!) graph 2 3)
+  ((add!) graph 3 4)
+  ((add!) graph 4 0)
+  ((add!) graph 0 1)
+  (map (lambda (n) ((rank-of) graph n)) (iota 5)))
+
+(define (test3)
+  (define graph ((make-graph) 0))
+  ((add!) graph 3 3)
+  ((add!) graph 2 3)
+  ((add!) graph 1 2)
+  ((add!) graph 0 1)
+  ((delete!) graph 0 1)
+  (map (lambda (n) ((rank-of) graph n)) (iota 10)))
 
 (define (run-all . tests)
   (for-each
@@ -333,6 +316,8 @@
             (pp (list test 'FAILED)))))
     tests))
 
-(fuzzy-test 100)
+(fuzzy-test 1000)
 (run-all
-  (list my-test))
+  (list test1)
+  (list test2)
+  (list test3))
