@@ -245,60 +245,75 @@
                   children)
                 (loop))))))))
 
-(define make-graph (make-parameter #f))
-(define add!       (make-parameter #f))
-(define delete!    (make-parameter #f))
-(define rank-of    (make-parameter #f))
-
-(define seed
-  (let ((rs (make-random-source)))
-    (random-source-randomize! rs)
-    (random-source-state-ref rs)))
-
 (define (fuzzy-test)
-  (define N 10)
-  (define repetitions 25)
-  (define graph ((make-graph) 0))
-  (define nodes (iota N))
-  (define instructions '())
-  (define random-source (make-random-source))
-  (define randint (random-source-make-integers random-source))
-  (random-source-state-set! random-source seed)
+  (define make-graph (make-parameter #f))
+  (define add!       (make-parameter #f))
+  (define delete!    (make-parameter #f))
+  (define rank-of    (make-parameter #f))
 
-  (for-each
-    (lambda (_)
-      (let ((kind (randint 5))
-            (source (randint N))
-            (target (randint N)))
-          (if (> kind 0)
-              (begin
-                (set! instructions (cons (list 'add! source target) instructions))
-                ((add!) graph source target))
-              (begin
-                (set! instructions (cons (list 'delete! source target) instructions))
-                ((delete!) graph source target)))))
-    (iota repetitions))
+  (define (test seed)
+    (define N 10)
+    (define repetitions 25)
+    (define graph ((make-graph) 0))
+    (define nodes (iota N))
+    (define instructions '())
+    (define random-source (make-random-source))
+    (define randint (random-source-make-integers random-source))
+    (random-source-state-set! random-source seed)
 
-  (cons
-    instructions
-    (map (lambda (n) ((rank-of) graph n)) (iota N))))
+    (for-each
+      (lambda (_)
+        (let ((kind (randint 5))
+              (source (randint N))
+              (target (randint N)))
+            (if (> kind 0)
+                (begin
+                  (set! instructions (cons (list 'add! source target) instructions))
+                  ((add!) graph source target))
+                (begin
+                  (set! instructions (cons (list 'delete! source target) instructions))
+                  ((delete!) graph source target)))))
+      (iota repetitions))
 
-(let ((expected-result
-        (parameterize ((make-graph make-test-graph)
-                       (add! test-graph-add!)
-                       (delete! test-graph-remove!)
-                       (rank-of test-graph-rank))
-          (fuzzy-test)))
-      (result
-        (parameterize ((make-graph make-BFSTree)
-                       (add! add-edge!)
-                       (delete! remove-edge!)
-                       (rank-of get-rank))
-      (fuzzy-test))))
-  (if (equal? expected-result result)
-      (pp 'OK)
-      (pp 'FAILED))
-  (pp 'OUTPUT:)
-  (pp (cdr result))
-  (pp 'EXPECTED:)
-  (pp (cdr expected-result)))
+    (cons
+      instructions
+      (map (lambda (n) ((rank-of) graph n)) (iota N))))
+
+  (let* ((seed (let ((rs (make-random-source)))
+                 (random-source-randomize! rs)
+                 (random-source-state-ref rs)))
+         (expected-result
+           (parameterize ((make-graph make-test-graph)
+                         (add! test-graph-add!)
+                         (delete! test-graph-remove!)
+                         (rank-of test-graph-rank))
+             (test seed)))
+         (expected-instructions (car expected-result))
+         (expected-result (cdr expected-result))
+         (result
+           (parameterize ((make-graph make-BFSTree)
+                         (add! add-edge!)
+                         (delete! remove-edge!)
+                         (rank-of get-rank))
+             (test seed)))
+         (instructions (car result))
+         (result (cdr result)))
+    (if (not (equal? expected-instructions instructions))
+        (error "test" "fuzzy tests executed different instructions"))
+    (or (equal? expected-result result)
+        (begin
+          (pp 'FAILED)
+          (pp 'OUTPUT:)
+          (pp result)
+          (pp 'EXPECTED:)
+          (pp expected-result)
+          (pp 'INSTRUCTIONS:)
+          (pp instructions)
+          #f))))
+
+(define (find-bug n)
+  (let loop ((i 0))
+    (when (< i n)
+      (if (fuzzy-test) (loop (+ i 1))))))
+
+(find-bug 100)
