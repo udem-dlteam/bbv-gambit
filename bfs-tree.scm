@@ -149,28 +149,49 @@
       x)
     best))
 
-(define (fix-dirty-node! tree dirty-queue node)
-  (when (not (source? tree node)) ;; source is never dirty
-    (let ((new-parent (get-lowest-ranked-incident-node tree node)))
-      (if new-parent (set-parent! tree node new-parent))
+(define (hoist tree dirty-queue)
+  (let* ((task (queue-get! dirty-queue))
+         (hoister (car task))
+         (node (cdr task)))
+    (when (dirty-edge? tree hoister node)
+      (set-parent! tree node hoister)
       (when (update-rank! tree node)
         (neighbors-for-each
-          (lambda (x) (queue-put! dirty-queue x))
+          (lambda (n) (queue-put! dirty-queue (cons node n)))
           tree
           node)))))
 
 (define (add-edge! tree from to)
-  (cond
-    ((clean-edge? tree from to) ;; adding this edge cannot lower rank
-      (add-friend! tree from to))
-    (else ;; forward edge may reduce the rank of some nodes
-      (let ((dirty-queue (make-queue)))
-        (add-friend! tree from to)
-        (queue-put! dirty-queue to)
-        (let loop ()
-          (when (not (queue-empty? dirty-queue))
-            (fix-dirty-node! tree dirty-queue (queue-get! dirty-queue))
-            (loop)))))))
+  (define queue (make-queue))
+
+  (define (hoist hoister node)
+    (when (dirty-edge? tree hoister node)
+      (set-parent! tree node hoister)
+      (update-rank! tree node)
+      (neighbors-for-each
+        (lambda (n)
+          (queue-put! queue node)
+          (queue-put! queue n))
+        tree
+        node)))
+
+    (add-friend! tree from to)
+    (hoist from to)
+    (do () ((queue-empty? queue))
+      (hoist (queue-get! queue) (queue-get! queue))))
+
+;; TODO: does not detect cycles
+(define (fix-dirty! tree dirty-queue)
+  (let ((node (queue-get! dirty-queue)))
+    ;(pp (list 'fix-dirty! node)) (thread-sleep! 0.5)
+    (when (not (source? tree node)) ;; source is never dirty
+      (let ((new-parent (get-lowest-ranked-incident-node tree node)))
+        (if new-parent (set-parent! tree node new-parent))
+        (when (update-rank! tree node)
+          (neighbors-for-each
+            (lambda (x) (queue-put! dirty-queue x))
+            tree
+            node))))))
 
 (define (remove-edge! tree from to)
   (cond
@@ -182,7 +203,7 @@
         (queue-put! dirty-queue to)
         (let loop ()
           (when (not (queue-empty? dirty-queue))
-            (fix-dirty-node! tree dirty-queue (queue-get! dirty-queue))
+            (fix-dirty! tree dirty-queue)
             (loop)))))))
 
 ;; tests
@@ -237,7 +258,7 @@
     (apply test args)))
 
 (define fuzzy-test-N 10)
-(define (run-one-fuzzy-test)
+(define (run-one-fuzzy-test #!key (debug #f))
   (define (make-instruction kind edge)
     (list 'lambda '(graph) (cons (list kind) (cons 'graph edge))))
   (define (lift-instruction instr)
@@ -259,6 +280,7 @@
     (map (lambda (n) ((rank-of) graph n)) (iota fuzzy-test-N)))
 
   (let* ((instructions (random-instructions 25 10))
+         (_ (when debug (pp 'INSTRUCTIONS:) (for-each pp (map lift-instruction instructions))))
          (expected-result (get-test-expected-result test instructions))
          (result (run test instructions)))
     (or (equal? expected-result result)
@@ -272,10 +294,10 @@
           (for-each pp (map lift-instruction instructions))
           #f))))
 
-(define (fuzzy-test n)
+(define (fuzzy-test n #!key (debug #f))
   (let loop ((i 0))
     (when (< i n)
-      (if (run-one-fuzzy-test) (loop (+ i 1))))))
+      (if (run-one-fuzzy-test debug: debug) (loop (+ i 1))))))
 
 (define (test1)
   (define graph ((make-graph) 0))
@@ -302,7 +324,15 @@
   ((add!) graph 1 2)
   ((add!) graph 0 1)
   ((delete!) graph 0 1)
-  (map (lambda (n) ((rank-of) graph n)) (iota 10)))
+  (map (lambda (n) ((rank-of) graph n)) (iota 4)))
+
+(define (test4)
+  (define graph ((make-graph) 0))
+  ((add!) graph 0 1)
+  ((add!) graph 1 2)
+  ((add!) graph 2 1)
+  ((delete!) graph 0 1)
+  (map (lambda (n) ((rank-of) graph n)) (iota 6)))
 
 (define (run-all . tests)
   (for-each
@@ -316,8 +346,10 @@
             (pp (list test 'FAILED)))))
     tests))
 
-(fuzzy-test 1000)
+;(fuzzy-test 1000 debug: #t)
 (run-all
   (list test1)
   (list test2)
-  (list test3))
+  (list test3)
+  (list test4)
+)
