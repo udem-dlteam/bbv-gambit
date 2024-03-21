@@ -10,6 +10,7 @@
       (if (queue-empty? queue) (set-cdr! queue '()))
       x)))
 (define (queue-put! queue x)
+  (pp (list 'queue-put x))
   (let ((entry (cons x '())))
     (if (queue-empty? queue)
       (set-car! queue entry)
@@ -33,6 +34,7 @@
           default))))
 
 (define (make-BFSTree source)
+  (pp (list 'make-BFSTree source))
   (vector
     source                                  ;; source
     (list->table (list (cons source 0)))    ;; ranks table
@@ -149,31 +151,36 @@
   (eq? p (get-parent tree x)))
 
 (define (add-edge! tree from to)
+  (pp (list 'add-edge! from to))
   (cond
     ((clean-edge? tree from to) ;; adding this edge cannot lower rank
       (add-friend! tree from to))
     (else ;; forward edge may reduce the rank of some nodes
       (let ((dirty-queue (make-queue)))
         (define (hoist new-parent node)
+          (pp (list 'hoist new-parent node))
           (let ((old-parent (get-parent tree node)))
-            ;; set new parent
-            (set-parent! tree node new-parent)
-            ;; if node was a friend of new-parent remove the relation
-            (remove-friend! tree new-parent node)
-            ;; the old parent now has rank higher or equal to node
-            ;; node is now a friend of the old parent
-            (if old-parent (add-friend! tree old-parent node))
-            ;; recompute the rank with this new parent
-            (if (update-rank! tree node)
-              ;; if rank changed
-              ;; Search for edges that are now higher ranked
-              ;; and mark them as dirty to be fixed later
-              (neighbors-for-each
-                (lambda (x)
-                  (when (dirty-edge? tree node x)
-                    (queue-put! dirty-queue (list node x))))
-                tree
-                node))))
+            ;; first check that the new-parent is still a valid parent
+            (when (or (not old-parent)
+                      (> (get-rank tree old-parent) (get-rank tree new-parent)))
+              ;; set new parent
+              (set-parent! tree node new-parent)
+              ;; if node was a friend of new-parent remove the relation
+              (remove-friend! tree new-parent node)
+              ;; the old parent now has rank higher or equal to node
+              ;; node is now a friend of the old parent
+              (if old-parent (add-friend! tree old-parent node))
+              ;; recompute the rank with this new parent
+              (if (update-rank! tree node)
+                ;; if rank changed
+                ;; Search for edges that are now higher ranked
+                ;; and mark them as dirty to be fixed later
+                (neighbors-for-each
+                  (lambda (x)
+                    (when (dirty-edge? tree node x)
+                      (queue-put! dirty-queue (list node x))))
+                  tree
+                  node)))))
 
         (queue-put! dirty-queue (list from to))
 
@@ -326,6 +333,6 @@
             (pp (list test 'FAILED)))))
     tests))
 
-;(fuzzy-test 100)
+(fuzzy-test 100)
 (run-all
   (list my-test))
