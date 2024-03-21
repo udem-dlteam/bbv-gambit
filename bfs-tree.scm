@@ -3,12 +3,10 @@
 (define (make-queue) (cons '() '()))
 (define (queue-empty? queue) (null? (car queue)))
 (define (queue-get! queue)
-  (if (queue-empty? queue)
-    (error "queue-get!, queue is empty")
-    (let ((x (caar queue)))
-      (set-car! queue (cdar queue))
-      (if (queue-empty? queue) (set-cdr! queue '()))
-      x)))
+  (let ((x (caar queue)))
+    (set-car! queue (cdar queue))
+    (if (queue-empty? queue) (set-cdr! queue '()))
+    x))
 (define (queue-put! queue x)
   (let ((entry (cons x '())))
     (if (queue-empty? queue)
@@ -16,11 +14,14 @@
       (set-cdr! (cdr queue) entry))
     (set-cdr! queue entry)
     x))
+(define (queue-peek queue) (if (queue-empty? queue) #f (caar queue)))
 
 (define (make-set) (make-table))
 (define (set-add! set x) (table-set! set x #t))
 (define (set-remove! set x) (table-set! set x))
 (define (set-contains? set x) (table-ref set x #f))
+(define (set-length set) (table-length set))
+(define (set-empty? set) (= (set-length set) 0))
 (define (set-for-each f set) (table-for-each (lambda (k _) (f k)) set))
 (define (set-search f set) (table-search (lambda (k _) (f k)) set))
 (define (set->list set) (map car (table->list set)))
@@ -132,23 +133,6 @@
 (define (parent? tree x p)
   (eq? p (get-parent tree x)))
 
-(define (get-lowest-ranked-incident-node tree x)
-  ;; favor parent in case of tie
-  (let* ((best (get-parent tree x))
-         (best-rank (if best (get-rank tree best) infinity)))
-    (friendlies-for-each
-      (lambda (f)
-        (if (not (= f x)) ;; do not include self
-                          ;; it is either not the best or if it is
-                          ;; then it is the only incident
-          (let ((rank (get-rank tree f)))
-            (when (< rank best-rank)
-              (set! best f)
-              (set! best-rank rank)))))
-      tree
-      x)
-    best))
-
 (define (hoist tree dirty-queue)
   (let* ((task (queue-get! dirty-queue))
          (hoister (car task))
@@ -180,31 +164,75 @@
     (do () ((queue-empty? queue))
       (hoist (queue-get! queue) (queue-get! queue))))
 
-;; TODO: does not detect cycles
-(define (fix-dirty! tree dirty-queue)
-  (let ((node (queue-get! dirty-queue)))
-    ;(pp (list 'fix-dirty! node)) (thread-sleep! 0.5)
-    (when (not (source? tree node)) ;; source is never dirty
-      (let ((new-parent (get-lowest-ranked-incident-node tree node)))
-        (if new-parent (set-parent! tree node new-parent))
-        (when (update-rank! tree node)
-          (neighbors-for-each
-            (lambda (x) (queue-put! dirty-queue x))
-            tree
-            node))))))
-
 (define (remove-edge! tree from to)
   (cond
     ((not (parent? tree to from)) ;; edge not in BFS, can be removed safely
       (remove-friend! tree from to))
     (else
-      (let ((dirty-queue (make-queue)))
-        (remove-parent! tree to)
-        (queue-put! dirty-queue to)
-        (let loop ()
-          (when (not (queue-empty? dirty-queue))
-            (fix-dirty! tree dirty-queue)
-            (loop)))))))
+      (remove-parent-edge! tree to))))
+
+(define (remove-parent-edge! tree to)
+  (define loose-queue (make-queue))
+  (define catch-queue (make-queue))
+  (define loose-set (make-set))
+  (define anchor-table (make-table))
+
+  (define (loosen! node)
+    (let* ((rank (get-rank tree node))
+           (bucket (table-ref anchor-table rank #f)))
+      (when bucket
+        (set-remove! bucket node)
+        (if (set-empty? bucket) (table-set! anchor-table rank)))
+      (set-rank! tree node infinity)))
+  (define (loose? node) (= (get-rank tree node) infinity))
+
+  (define (anchor! node)
+    (let* ((rank (get-rank tree node))
+           (bucket (table-ref-or-set-default! anchor-table rank)))
+      (set-add! bucket node)))
+  (define (anchored? node)
+    (let* ((rank (get-rank tree node))
+           (bucket (table-ref anchor-table rank #f)))
+      (and bucket (set-contains? bucket node))))
+
+  (define (drop node)
+    (loosen! node)
+
+    ;; DFS across subtree to find loose nodes
+    (children-for-each
+      (lambda (child) (if (not (loose? child)) (drop child)))
+      tree
+      node)
+    (friendlies-for-each
+      (lambda (friendly)
+        (if (not (loose? friendly)) (anchor! friendly)))
+      tree
+      node))
+
+  (define (catch node)
+    (friends-for-each
+      (lambda (friend)
+        (when (loose? friend)
+          (set-parent! tree friend node)
+          (update-rank! tree friend)
+          (queue-put! catch-queue friend)))
+      tree
+      node))
+
+  (remove-parent! tree to)
+  (drop to)
+
+  (let* ((cmp (lambda (x y) (< (car x) (car y))))
+         (buckets (list-sort cmp (table->list anchor-table))))
+    (for-each
+      (lambda (bucket)
+        (let ((rank (car bucket))
+              (head (queue-peek catch-queue)))
+          (do ((next head (queue-peek catch-queue)))
+              ((or (not next) (> (get-rank tree next) rank)))
+              (catch (queue-get! catch-queue))))
+        (set-for-each catch (cdr bucket)))
+      buckets)))
 
 ;; tests
 
@@ -334,6 +362,18 @@
   ((delete!) graph 0 1)
   (map (lambda (n) ((rank-of) graph n)) (iota 6)))
 
+(define (test5)
+  (define graph ((make-graph) 0))
+  ((add!) graph 0 1)
+  ((add!) graph 1 2)
+  ((add!) graph 1 3)
+  ((add!) graph 2 4)
+  ((add!) graph 3 5)
+  ((add!) graph 5 4)
+  ((add!) graph 6 4)
+  ((delete!) graph 2 4)
+  (map (lambda (n) ((rank-of) graph n)) (iota 7)))
+
 (define (run-all . tests)
   (for-each
     (lambda (test-args)
@@ -343,13 +383,16 @@
              (result (apply run test args)))
         (if (equal? result expected)
             (pp (list test 'OK))
-            (pp (list test 'FAILED)))))
+            (begin
+              (pp (list test 'FAILED))
+              (pp (list 'EXPECTED: expected))
+              (pp (list 'OUTPUT: result))))))
     tests))
 
-;(fuzzy-test 1000 debug: #t)
+(fuzzy-test 1000 debug: #f)
 (run-all
   (list test1)
   (list test2)
   (list test3)
   (list test4)
-)
+  (list test5))
