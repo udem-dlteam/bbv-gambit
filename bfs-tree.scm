@@ -231,7 +231,7 @@
       (catch (queue-get! catch-queue)))))
 
 (define (connected? tree node)
-  (not (= (get-rank tree node)) infinity))
+  (not (= (get-rank tree node) infinity)))
 
 ;; tests
 
