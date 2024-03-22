@@ -117,6 +117,8 @@
   (>= (get-rank tree from) (- (get-rank tree to) 1)))
 (define (dirty-edge? tree from to)
   (not (clean-edge? tree from to)))
+(define (edge-exists? tree from to)
+  (or (parent? tree to from) (friend? tree from to)))
 
 (define (children-for-each f tree x)
   (set-for-each f (table-ref-or-set-default! (BFSTree-children tree) x)))
@@ -132,18 +134,8 @@
   (= (BFSTree-source tree) x))
 (define (parent? tree x p)
   (eq? p (get-parent tree x)))
-
-(define (hoist tree dirty-queue)
-  (let* ((task (queue-get! dirty-queue))
-         (hoister (car task))
-         (node (cdr task)))
-    (when (dirty-edge? tree hoister node)
-      (set-parent! tree node hoister)
-      (when (update-rank! tree node)
-        (neighbors-for-each
-          (lambda (n) (queue-put! dirty-queue (cons node n)))
-          tree
-          node)))))
+(define (friend? tree x f)
+  (set-contains? (table-ref-or-set-default! (BFSTree-friends tree) x) f))
 
 (define (add-edge! tree from to)
   (define queue (make-queue))
@@ -159,10 +151,11 @@
         tree
         node)))
 
+  (when (not (edge-exists? tree from to)) ;; no duplicate edges
     (add-friend! tree from to)
     (hoist from to)
     (do () ((queue-empty? queue))
-      (hoist (queue-get! queue) (queue-get! queue))))
+      (hoist (queue-get! queue) (queue-get! queue)))))
 
 (define (remove-edge! tree from to)
   (cond
@@ -288,6 +281,11 @@
                  (rank-of get-rank))
     (apply test args)))
 
+(define (interpret-test instructions N)
+  (define graph ((make-graph) 0))
+  (for-each (lambda (instr) ((eval instr) graph)) instructions)
+  (map (lambda (n) ((rank-of) graph n)) (iota N)))
+
 (define fuzzy-test-N 10)
 (define (run-one-fuzzy-test #!key (debug #f))
   (define (make-instruction kind edge)
@@ -303,17 +301,10 @@
         (cons (make-instruction kind edge)
               (random-instructions (- n 1) delete-sparsity)))))
 
-  (define (test instructions)
-    (define graph ((make-graph) 0))
-
-    (for-each (lambda (instr) ((eval instr) graph)) instructions)
-
-    (map (lambda (n) ((rank-of) graph n)) (iota fuzzy-test-N)))
-
   (let* ((instructions (random-instructions 25 10))
          (_ (when debug (pp 'INSTRUCTIONS:) (for-each pp (map lift-instruction instructions))))
-         (expected-result (get-test-expected-result test instructions))
-         (result (run test instructions)))
+         (expected-result (get-test-expected-result interpret-test instructions fuzzy-test-N))
+         (result (run interpret-test instructions fuzzy-test-N)))
     (or (equal? expected-result result)
         (begin
           (pp '(fuzzy-test FAILED))
@@ -390,6 +381,15 @@
   ((delete!) graph 2 4)
   (map (lambda (n) ((rank-of) graph n)) (iota 8)))
 
+(define (test7)
+  (define graph ((make-graph) 0))
+  ((add!) graph 0 1)
+  ((add!) graph 1 2)
+  ((add!) graph 2 3)
+  ((add!) graph 2 3)
+  ((delete!) graph 2 3)
+  (map (lambda (n) ((rank-of) graph n)) (iota 4)))
+
 (define (run-all . tests)
   (for-each
     (lambda (test-args)
@@ -405,11 +405,60 @@
               (pp (list 'OUTPUT: result))))))
     tests))
 
-(fuzzy-test 1000 debug: #f)
+(define (find-minimal-example init-instructions N)
+  (define (lambdaify instr) (list 'lambda '(graph) instr))
+  (define (delambdaify instr) (caddr instr))
+  (define lambdaified (map lambdaify init-instructions))
+  (let loop ((instructions lambdaified)
+             (minimal lambdaified))
+    (if (null? instructions)
+      (let ((delambdaified (map delambdaify minimal)))
+        (if (equal? delambdaified init-instructions)
+          (begin
+            (pp (list 'MINIMAL-EXAMPLE:))
+            (for-each pp delambdaified))
+          (find-minimal-example delambdaified N)))
+      (let ((without (filter (lambda (i) (not (eq? i (car instructions)))) minimal)))
+        (if (equal?
+              (run interpret-test without N)
+              (get-test-expected-result interpret-test without N))
+          (loop (cdr instructions) minimal)
+          (loop (cdr instructions) without))))))
+
+;(fuzzy-test 1000 debug: #f)
 (run-all
+  (list test7)
   (list test1)
   (list test2)
   (list test3)
   (list test4)
   (list test5)
   (list test6))
+
+#;(find-minimal-example
+  '(((add!) graph 7 2)
+    ((add!) graph 1 7)
+    ((add!) graph 1 8)
+    ((add!) graph 2 8)
+    ((add!) graph 0 2)
+    ((add!) graph 1 3)
+    ((add!) graph 4 0)
+    ((add!) graph 7 5)
+    ((add!) graph 8 6)
+    ((add!) graph 6 9)
+    ((add!) graph 0 1)
+    ((add!) graph 7 0)
+    ((add!) graph 3 7)
+    ((add!) graph 8 6)
+    ((add!) graph 3 5)
+    ((add!) graph 7 9)
+    ((add!) graph 9 2)
+    ((add!) graph 8 9)
+    ((delete!) graph 8 5)
+    ((add!) graph 1 5)
+    ((add!) graph 3 9)
+    ((add!) graph 3 4)
+    ((add!) graph 4 6)
+    ((delete!) graph 8 6)
+    ((add!) graph 4 8))
+  10)
