@@ -210,12 +210,12 @@
       node))
 
   (define (catch node)
-    (friends-for-each
-      (lambda (friend)
-        (when (loose? friend)
-          (set-parent! tree friend node)
-          (update-rank! tree friend)
-          (queue-put! catch-queue friend)))
+    (neighbors-for-each
+      (lambda (neighbor)
+        (when (loose? neighbor)
+          (set-parent! tree neighbor node)
+          (update-rank! tree neighbor)
+          (queue-put! catch-queue neighbor)))
       tree
       node))
 
@@ -232,7 +232,10 @@
               ((or (not next) (> (get-rank tree next) rank)))
               (catch (queue-get! catch-queue))))
         (set-for-each catch (cdr bucket)))
-      buckets)))
+      buckets)
+    ;; all buckets caught, catch rest of the queue
+    (do () ((queue-empty? catch-queue))
+      (catch (queue-get! catch-queue)))))
 
 ;; tests
 
@@ -374,6 +377,19 @@
   ((delete!) graph 2 4)
   (map (lambda (n) ((rank-of) graph n)) (iota 7)))
 
+(define (test6)
+  (define graph ((make-graph) 0))
+  ((add!) graph 0 1)
+  ((add!) graph 1 2)
+  ((add!) graph 1 3)
+  ((add!) graph 2 4)
+  ((add!) graph 3 5)
+  ((add!) graph 4 6)
+  ((add!) graph 5 4)
+  ((add!) graph 6 7)
+  ((delete!) graph 2 4)
+  (map (lambda (n) ((rank-of) graph n)) (iota 8)))
+
 (define (run-all . tests)
   (for-each
     (lambda (test-args)
@@ -385,7 +401,7 @@
             (pp (list test 'OK))
             (begin
               (pp (list test 'FAILED))
-              (pp (list 'EXPECTED: expected))
+              (pp (list 'EXPECT: expected))
               (pp (list 'OUTPUT: result))))))
     tests))
 
@@ -395,4 +411,5 @@
   (list test2)
   (list test3)
   (list test4)
-  (list test5))
+  (list test5)
+  (list test6))
