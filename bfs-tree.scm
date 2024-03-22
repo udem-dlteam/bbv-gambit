@@ -393,6 +393,15 @@
   ((delete!) graph 2 3)
   (map (lambda (n) ((rank-of) graph n)) (iota 4)))
 
+(define (test8)
+  (define graph ((make-graph) -1))
+  ((add!) graph -1 0)
+  ((add!) graph 0 1)
+  ((add!) graph 1 2)
+  ((add!) graph 1 2)
+  ((delete!) graph 1 2)
+  (map (lambda (n) ((rank-of) graph n)) (iota 4 -1)))
+
 (define (run-all . tests)
   (for-each
     (lambda (test-args)
@@ -436,4 +445,5 @@
   (list test4)
   (list test5)
   (list test6)
-  (list test7))
+  (list test7)
+  (list test8))
