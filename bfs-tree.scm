@@ -230,6 +230,9 @@
     (do () ((queue-empty? catch-queue))
       (catch (queue-get! catch-queue)))))
 
+(define (connected? tree node)
+  (not (= (get-rank tree node)) infinity))
+
 ;; tests
 
 (define (make-test-graph source)
