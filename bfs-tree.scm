@@ -202,7 +202,7 @@
       (and bucket (set-contains? bucket node))))
 
   (define (drop node)
-    (when (>= (get-rank tree node) cliff-edge)
+    (when (> (get-rank tree node) cliff-edge)
       (loosen! node)
 
       ;; DFS across subtree to find loose nodes
@@ -227,6 +227,8 @@
       node))
 
   (remove-parent! tree to)
+  ;; the rank will increase by at least 1 and this removes a check from (drop node)
+  (set-rank! tree to (+ (get-rank tree to) 1))
   (drop to)
 
   (let* ((cmp (lambda (x y) (< (car x) (car y))))
