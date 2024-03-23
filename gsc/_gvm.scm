@@ -11,6 +11,8 @@
 (include-adt "_ptreeadt.scm")
 (include-adt "_sourceadt.scm")
 
+(##include "../gsc/bfs.scm")
+
 (define (pprint val)
   (##namespace ("" pp))
   (pp val))
@@ -2318,9 +2320,7 @@
 
     (define work-queue (queue-empty))
 
-    (define-type queue-task
-      bb
-      version-lbl)
+    (define-type queue-task bb version-lbl)
 
     (define orig-lbl-mapping (make-table))
     (define (orig-lbl-mapping-set! lbl orig-lbl) (table-set! orig-lbl-mapping lbl orig-lbl))
@@ -2331,905 +2331,850 @@
         new-lbl))
     (define (new-lbl? lbl bbs) (not (lbl-num->bb lbl bbs)))
 
-    (define reachable-table (make-table))
-    (define (reachability-set! lbl r)
-      (table-set! reachable-table lbl r))
+    (define (reachable? lbl) (connected? BFSTree lbl)) 
 
-    (define (reachable? lbl) (table-ref reachable-table lbl #f))
-
-    (define (all-reachables-exist?)
-      (let ((missing-reachables (filter (lambda (l) (not (lbl-num->bb l new-bbs)))
-                                        (map car (table->list reachable-table)))))
-
-        (define (intersect l1 l2)
-          (if (null? l2)
-            '()
-            (if (memq (car l2) l1)
-                (cons (car l2) (intersect l1 (cdr l2)))
-                (intersect l1 (cdr l2)))))
-
-        (if (not (null? missing-reachables))
-          (begin (display (list 'reachables-do-not-exist missing-reachables))(newline)))
-
-        (bbs-for-each-bb
-          (lambda (bb)
-            (let ((missings (intersect (bb-references bb) missing-reachables)))
-              (for-each
-                (lambda (miss)
-                  (display (list (bb-lbl-num bb) '-> miss))(newline))
-                missings)))
-          new-bbs)
-        (if (pair? missing-reachables)
-          (error "all-reachables-exist?" "no"))))
-
-    (define (update-reachability!)
-      ;(write (list 'UPDATING-REACHABILITY))(newline)
-
-      ;; recompute basic block references
-      ;(bbs-determine-refs! bbs)
-
-      (bbs-determine-refs! new-bbs)
-
-      ;; reinitialize reachable blocks
-      (set! reachable-table (make-table))
-
-      ;; DFS through CFG references
-      (let visit ((lbl (bbs-entry-lbl-num new-bbs)))
-        (if (not (reachable? lbl)) ;; not visited
-            (let* ((bb (lbl-num->bb lbl new-bbs)))
-              (reachability-set! lbl #t)
-              (if bb
-                  (let ((refs (map replacement-lbl-num (bb-references bb))))
-                    (for-each visit refs))))))
-
-      ;; remove unreachable versions from live versions of all blocks
+    (define (bbs-cleanup) 
+      ;; remove unreachable bb
+      ;; required to avoid having uninitialized bb in the bbs
       (bbs-for-each-bb
         (lambda (bb)
-          (let* ((orig-lbl (bb-lbl-num bb))
-                 (bb-versions (get-bb-versions-from-lbl orig-lbl))
-                 (changed? (bb-versions-active-lbl-remove-unreachable! bb-versions)))
-            ;; remove unreachable versions from live bb versions
-            (if changed? (track-version-history orig-lbl '(gc #f))) ;; track history of versions
-            ;; add back newly reachable versions to be processed
-            (bb-versions-active-lbl-for-each
-              (lambda (types lbl)
-                (if (new-lbl? lbl new-bbs)
-                    (queue-put! work-queue (make-queue-task bb lbl))))
-              bb-versions)))
-        bbs))
+          (let ((lbl (bb-lbl-num bb)))
+            (when (not (reachable? lbl))
+                (bbs-bb-remove! new-bbs lbl))))
+        new-bbs))
 
-      (define (bbs-cleanup)
-        (update-reachability!)
+    (define version-types-table (make-table))
 
-        ;; remove unreachable bb
-        ;; required to avoid having uninitialized bb in the bbs
-        (bbs-for-each-bb
-          (lambda (bb)
-            (let ((lbl (bb-lbl-num bb)))
-              (if (not (reachable? lbl)) (bbs-bb-remove! new-bbs lbl))))
-          new-bbs))
+    (define (get-version-types lbl)
+      (table-ref version-types-table lbl))
 
-      (define version-types-table (make-table))
+    (define (set-version-types! lbl types)
+      (table-set! version-types-table lbl types))
 
-      (define (get-version-types lbl)
-        (table-ref version-types-table lbl))
+    (define (track-version-history lbl operation) ;; track history of versions
+      (if (and track-version-history? (show-version-history-of-lbl lbl))
+          (let* ((bb (lbl-num->bb lbl bbs))
+                  (label (bb-label-instr bb))
+                  (frame (gvm-instr-frame label))
+                  (bb-versions (table-ref versions lbl))
+                  (types-lbl-alist (bb-versions-active-lbl->list bb-versions sort?: #t))
+                  (text-grid (bb-versions-text-grid bb-versions))
+                  (version-index-tbl (bb-versions-index-table bb-versions))
+                  (options '(brief new))
+                  (col (max 1 (text-grid-cols text-grid)))
+                  (op (car operation))
+                  (from-lbl (cadr operation)))
 
-      (define (set-version-types! lbl types)
-        (table-set! version-types-table lbl types))
-
-      (define (track-version-history lbl operation) ;; track history of versions
-        (if (and track-version-history? (show-version-history-of-lbl lbl))
-            (let* ((bb (lbl-num->bb lbl bbs))
-                   (label (bb-label-instr bb))
-                   (frame (gvm-instr-frame label))
-                   (bb-versions (table-ref versions lbl))
-                   (types-lbl-alist (bb-versions-active-lbl->list bb-versions sort?: #t))
-                   (text-grid (bb-versions-text-grid bb-versions))
-                   (version-index-tbl (bb-versions-index-table bb-versions))
-                   (options '(brief new))
-                   (col (max 1 (text-grid-cols text-grid)))
-                   (op (car operation))
-                   (from-lbl (cadr operation)))
-
-              (if (memq op '(add merge))
-                  (let* ((newest-types-lbl (last types-lbl-alist))
-                         (types (car newest-types-lbl))
-                         (new-lbl (cdr newest-types-lbl)))
-                    (or (table-ref version-index-tbl new-lbl #f)
-                        (let ((index (table-length version-index-tbl)))
-                          (table-set! version-index-tbl new-lbl index)
-                          (text-grid-set! text-grid
-                           (+ index 2)
-                           0
-                           (string-append
-                            (format-gvm-lbl new-lbl '(new))
-                            (if from-lbl
-                                (string-append
-                                 "<-"
-                                 (format-gvm-lbl from-lbl '(new)))
-                                "")))
-                          index))))
-
-              (let ((header (format-frame frame #f 'header options))
-                    (info
-                     (if from-lbl
-                         (string-append
-                          (if (memq op '(add merge))
-                              " <-"
-                              " ")
-                          (format-gvm-lbl from-lbl '(new)))
-                         "")))
-
-                (text-grid-set!
-                 text-grid
-                 0
-                 col
-                 column-sep)
-
-                (case op
-                  ((add)
-                   (text-grid-set!
-                    text-grid
-                    0
-                    (+ col 1)
-                    (list 'span
-                          (length header)
-                          (string-append "ADD" info))))
-                  ((merge)
-                   (text-grid-set!
-                    text-grid
-                    0
-                    (+ col 1)
-                    (list 'span
-                          (length header)
-                          (string-append "MERGE" info))))
-                  ((gc)
-                   (text-grid-set!
-                    text-grid
-                    0
-                    (+ col 1)
-                    (list 'span
-                          (length header)
-                          (string-append "GC" info)))))
-
-                (text-grid-set!
-                 text-grid
-                 1
-                 col
-                 column-sep)
-
-                (text-grid-line-set!
-                 text-grid
-                 1
-                 (+ col 1)
-                 header)
-
-                (if (pair? (cddr operation))
-                    (let* ((details
-                            (caddr operation))
-                           (index
-                            (table-length version-index-tbl))
-                           (width
-                            (apply max (map string-length details)))
-                           (c
-                            col))
-                      (for-each
-                       (lambda (h)
-                         (text-grid-set!
-                          text-grid
+            (if (memq op '(add merge))
+                (let* ((newest-types-lbl (last types-lbl-alist))
+                        (types (car newest-types-lbl))
+                        (new-lbl (cdr newest-types-lbl)))
+                  (or (table-ref version-index-tbl new-lbl #f)
+                      (let ((index (table-length version-index-tbl)))
+                        (table-set! version-index-tbl new-lbl index)
+                        (text-grid-set! text-grid
                           (+ index 2)
-                          (+ c 1)
-                          details-sep)
-                         (set! c (+ c 1)))
-                       header)
-                      (for-each
-                       (lambda (line)
-                         (text-grid-set!
-                          text-grid
-                          (+ index 3)
-                          (+ col 1)
-                          (list 'span
-                                (length header)
-                                line))
-                         (set! index (+ index 1)))
-                       details))))
+                          0
+                          (string-append
+                          (format-gvm-lbl new-lbl '(new))
+                          (if from-lbl
+                              (string-append
+                                "<-"
+                                (format-gvm-lbl from-lbl '(new)))
+                              "")))
+                        index))))
 
-              (for-each
-               (lambda (types-lbl)
-                 (let* ((types (car types-lbl))
-                        (version-lbl (cdr types-lbl))
-                        (i (table-ref version-index-tbl version-lbl))
-                        (typs (format-frame frame types 'types options)))
-                   (text-grid-line-set! text-grid (+ i 2) (+ col 1) typs)))
-               types-lbl-alist))))
+            (let ((header (format-frame frame #f 'header options))
+                  (info
+                    (if from-lbl
+                        (string-append
+                        (if (memq op '(add merge))
+                            " <-"
+                            " ")
+                        (format-gvm-lbl from-lbl '(new)))
+                        "")))
 
-      (define (reach lbl from-lbl bbvctx)
-        (let* ((types-before (bbvctx-types bbvctx))
-               (bb (lbl-num->bb lbl bbs))
-               (label (bb-label-instr bb))
-               (frame (gvm-instr-frame label))
-               (types-before
-                (if (and (eq? (label-kind label) 'entry)
-                         (or (pair? (label-entry-keys label)) ;; label with "complex" parameter handling?
-                             (pair? (label-entry-opts label))
-                             (label-entry-rest? label)))
-                    (generic-entry-frame-types frame)
-                    (resized-frame-types-remove-dead frame types-before)))
-               (bb-versions (get-bb-versions bb))
-               (old-version (bb-versions-all-lbl-get bb-versions types-before))
-               (most-recent-version
-                  (and old-version
-                       (replacement-lbl-num old-version)))
-               (version-types
-                  (if most-recent-version
-                      (get-version-types most-recent-version)
-                      types-before))
-               (version-is-live?
-                 (and most-recent-version
-                      (bb-versions-active-lbl-get bb-versions version-types))))
+              (text-grid-set!
+                text-grid
+                0
+                col
+                column-sep)
 
-          (if version-is-live?
-              most-recent-version
-              (let* ((new-lbl (or most-recent-version (new-lbl! lbl))))
-                (bb-versions-active-lbl-add! bb-versions version-types new-lbl)
-                (track-version-history lbl (list 'add from-lbl)) ;; track history of versions
-                (queue-put! work-queue (make-queue-task bb new-lbl))
-                (reachability-set! new-lbl #t)
-                new-lbl))))
+              (case op
+                ((add)
+                  (text-grid-set!
+                  text-grid
+                  0
+                  (+ col 1)
+                  (list 'span
+                        (length header)
+                        (string-append "ADD" info))))
+                ((merge)
+                  (text-grid-set!
+                  text-grid
+                  0
+                  (+ col 1)
+                  (list 'span
+                        (length header)
+                        (string-append "MERGE" info))))
+                ((gc)
+                  (text-grid-set!
+                  text-grid
+                  0
+                  (+ col 1)
+                  (list 'span
+                        (length header)
+                        (string-append "GC" info)))))
 
-      (define (walk-bb bb types-before new-lbl)
-        (let ((orig-lbl (bb-lbl-num bb))
-              (new-bb #f))
+              (text-grid-set!
+                text-grid
+                1
+                col
+                column-sep)
 
-          (define show #t)
-          (define (reach* lbl from-lbl types-after)
-            (if (and debug-bbv? show)
-                (begin
-                  (write-bb new-bb '(new) (current-output-port))
-                  (print "...\n")
-                  (set! show #f)))
-            (reach lbl
-                   from-lbl
-                   (make-bbvctx
-                    (let ((dest-fs (bb-entry-frame-size (lbl-num->bb lbl bbs))))
-                      (types-keep-topmost-slots types-after dest-fs)))))
+              (text-grid-line-set!
+                text-grid
+                1
+                (+ col 1)
+                header)
 
-        (define (reach-ret* lbl from-lbl types-after)
-            (if (and debug-bbv? show)
-                (begin
-                  (write-bb new-bb '(new) (current-output-port))
-                  (print "...\n")
-                  (set! show #f)))
-            (reach lbl
-                   from-lbl
-                   (make-bbvctx
-                    (let* ((bb (lbl-num->bb lbl bbs))
-                           (label (bb-label-instr bb))
-                           (frame (gvm-instr-frame label)))
-                      (types-truncate types-after frame)))))
+              (if (pair? (cddr operation))
+                  (let* ((details
+                          (caddr operation))
+                          (index
+                          (table-length version-index-tbl))
+                          (width
+                          (apply max (map string-length details)))
+                          (c
+                          col))
+                    (for-each
+                      (lambda (h)
+                        (text-grid-set!
+                        text-grid
+                        (+ index 2)
+                        (+ c 1)
+                        details-sep)
+                        (set! c (+ c 1)))
+                      header)
+                    (for-each
+                      (lambda (line)
+                        (text-grid-set!
+                        text-grid
+                        (+ index 3)
+                        (+ col 1)
+                        (list 'span
+                              (length header)
+                              line))
+                        (set! index (+ index 1)))
+                      details))))
 
-        (define (walk-opnd gvm-opnd)
-          (and gvm-opnd
-               (if (lbl? gvm-opnd)
-                   (let* ((lbl
-                           (lbl-num gvm-opnd))
-                          (bb
-                           (lbl-num->bb lbl bbs))
-                          (label
-                           (bb-label-instr bb))
-                          (types-bef
-                           (generic-entry-frame-types (gvm-instr-frame label))))
-                     (make-lbl (reach* lbl #f types-bef)))
-                   gvm-opnd)))
+            (for-each
+              (lambda (types-lbl)
+                (let* ((types (car types-lbl))
+                      (version-lbl (cdr types-lbl))
+                      (i (table-ref version-index-tbl version-lbl))
+                      (typs (format-frame frame types 'types options)))
+                  (text-grid-line-set! text-grid (+ i 2) (+ col 1) typs)))
+              types-lbl-alist))))
 
-        (define (walk-loc gvm-opnd)
-          (walk-opnd gvm-opnd))
+    (define (reach lbl from-lbl bbvctx)
+      (let* ((types-before (bbvctx-types bbvctx))
+              (bb (lbl-num->bb lbl bbs))
+              (label (bb-label-instr bb))
+              (frame (gvm-instr-frame label))
+              (types-before
+              (if (and (eq? (label-kind label) 'entry)
+                        (or (pair? (label-entry-keys label)) ;; label with "complex" parameter handling?
+                            (pair? (label-entry-opts label))
+                            (label-entry-rest? label)))
+                  (generic-entry-frame-types frame)
+                  (resized-frame-types-remove-dead frame types-before)))
+              (bb-versions (get-bb-versions bb))
+              (old-version (bb-versions-all-lbl-get bb-versions types-before))
+              (most-recent-version
+                (and old-version (replacement-lbl-num old-version)))
+              (version-types
+                (if most-recent-version
+                    (get-version-types most-recent-version)
+                    types-before))
+              (version-is-live?
+                (and most-recent-version
+                    (bb-versions-active-lbl-get bb-versions version-types))))
+        (if version-is-live?
+            (begin
+              ;(if (= most-recent-version 2) (pp (list 'reaching 'live 2)))
+              (if from-lbl (add-edge! BFSTree from-lbl most-recent-version onrevive))
+              most-recent-version)
+            (let* ((new-lbl (or most-recent-version (new-lbl! lbl))))
+              (bb-versions-active-lbl-add! bb-versions version-types new-lbl)
+              (track-version-history lbl (list 'add from-lbl)) ;; track history of versions
+              (queue-put! work-queue (make-queue-task bb new-lbl))
+              ;(if (= new-lbl 2) (pp (list 'reaching 'anew 2)))
+              (if from-lbl (add-edge! BFSTree from-lbl new-lbl onrevive))
+              new-lbl))))
 
-        (define (walk-instr gvm-instr types-before)
+    (define (walk-bb bb types-before new-lbl)
+      (let ((orig-lbl (bb-lbl-num bb))
+            (new-bb #f))
 
-          (define (opnd-type opnd new-opnd types)
-            (cond ((not new-opnd)
-                   type-bot)
-                  ((locenv-loc? new-opnd)
-                   (locenv-ref types
-                               (gvm-loc->locenv-index types new-opnd)))
-                  ((obj? new-opnd)
-                   (make-type-singleton (obj-val new-opnd)))
-                  ((lbl? new-opnd)
-                   (let* ((new-lbl (lbl-num new-opnd))
-                          (orig-lbl (orig-lbl-mapping-ref new-lbl))
-                          (kind (bb-label-kind (lbl-num->bb orig-lbl bbs)))
-                          (lbl-obj (make-lbl-obj orig-lbl new-lbl kind #f)))
-                     (make-type-from-lbl-obj lbl-obj)))
-                  (else
-                   ;; global variable
-                   (make-type-top-with-new-length-bound bb))))
+        (define show #t)
+        (define (reach* lbl types-after)
+          (if (and debug-bbv? show)
+              (begin
+                (write-bb new-bb '(new) (current-output-port))
+                (print "...\n")
+                (set! show #f)))
+          (reach lbl
+                  new-lbl
+                  (make-bbvctx
+                  (let ((dest-fs (bb-entry-frame-size (lbl-num->bb lbl bbs))))
+                    (types-keep-topmost-slots types-after dest-fs)))))
 
-          (define (opnd-constantify opnd new-opnd types-before)
-            (if (locenv-loc? opnd)
-                (let ((type (opnd-type opnd new-opnd types-before)))
-                  (if (type-singleton? type)
-                      (type-singleton->new-opnd type)
-                      new-opnd))
-                new-opnd))
+      (define (reach-ret* lbl from-lbl types-after)
+          (if (and debug-bbv? show)
+              (begin
+                (write-bb new-bb '(new) (current-output-port))
+                (print "...\n")
+                (set! show #f)))
+          (reach lbl
+                  from-lbl
+                  (make-bbvctx
+                  (let* ((bb (lbl-num->bb lbl bbs))
+                          (label (bb-label-instr bb))
+                          (frame (gvm-instr-frame label)))
+                    (types-truncate types-after frame)))))
 
-          (let ((types-after
-                 (resized-frame-types-remove-dead
-                  (gvm-instr-frame gvm-instr)
-                  types-before)))
+      (define (walk-opnd gvm-opnd)
+        (and gvm-opnd
+              (if (lbl? gvm-opnd)
+                  (let* ((lbl
+                          (lbl-num gvm-opnd))
+                        (bb
+                          (lbl-num->bb lbl bbs))
+                        (label
+                          (bb-label-instr bb))
+                        (types-bef
+                          (generic-entry-frame-types (gvm-instr-frame label))))
+                    (make-lbl (reach* lbl types-bef)))
+                  gvm-opnd)))
+
+      (define (walk-loc gvm-opnd)
+        (walk-opnd gvm-opnd))
+
+      (define (walk-instr gvm-instr types-before)
+
+        (define (opnd-type opnd new-opnd types)
+          (cond ((not new-opnd)
+                  type-bot)
+                ((locenv-loc? new-opnd)
+                  (locenv-ref types
+                              (gvm-loc->locenv-index types new-opnd)))
+                ((obj? new-opnd)
+                  (make-type-singleton (obj-val new-opnd)))
+                ((lbl? new-opnd)
+                  (let* ((new-lbl (lbl-num new-opnd))
+                        (orig-lbl (orig-lbl-mapping-ref new-lbl))
+                        (kind (bb-label-kind (lbl-num->bb orig-lbl bbs)))
+                        (lbl-obj (make-lbl-obj orig-lbl new-lbl kind #f)))
+                    (make-type-from-lbl-obj lbl-obj)))
+                (else
+                  ;; global variable
+                  (make-type-top-with-new-length-bound bb))))
+
+        (define (opnd-constantify opnd new-opnd types-before)
+          (if (locenv-loc? opnd)
+              (let ((type (opnd-type opnd new-opnd types-before)))
+                (if (type-singleton? type)
+                    (type-singleton->new-opnd type)
+                    new-opnd))
+              new-opnd))
+
+        (let ((types-after
+                (resized-frame-types-remove-dead
+                (gvm-instr-frame gvm-instr)
+                types-before)))
 
 
-            (case (gvm-instr-kind gvm-instr)
+          (case (gvm-instr-kind gvm-instr)
 
-              ((label)
+            ((label)
 ;;               (pprint '****label)
-               (let ((new-instr
-                      (case (label-kind gvm-instr)
+              (let ((new-instr
+                    (case (label-kind gvm-instr)
 
-                        ((simple)
-                         (make-label-simple
-                          new-lbl
-                          (gvm-instr-frame gvm-instr)
-                          (gvm-instr-comment gvm-instr)))
+                      ((simple)
+                        (make-label-simple
+                        new-lbl
+                        (gvm-instr-frame gvm-instr)
+                        (gvm-instr-comment gvm-instr)))
 
-                        ((entry)
-                         (make-label-entry
-                          new-lbl
-                          (label-entry-nb-parms gvm-instr)
-                          (label-entry-opts gvm-instr)
-                          (label-entry-keys gvm-instr)
-                          (label-entry-rest? gvm-instr)
-                          (label-entry-closed? gvm-instr)
-                          (gvm-instr-frame gvm-instr)
-                          (gvm-instr-comment gvm-instr)))
+                      ((entry)
+                        (make-label-entry
+                        new-lbl
+                        (label-entry-nb-parms gvm-instr)
+                        (label-entry-opts gvm-instr)
+                        (label-entry-keys gvm-instr)
+                        (label-entry-rest? gvm-instr)
+                        (label-entry-closed? gvm-instr)
+                        (gvm-instr-frame gvm-instr)
+                        (gvm-instr-comment gvm-instr)))
 
-                        ((return)
-                         (make-label-return
-                          new-lbl
-                          (gvm-instr-frame gvm-instr)
-                          (gvm-instr-comment gvm-instr)))
+                      ((return)
+                        (make-label-return
+                        new-lbl
+                        (gvm-instr-frame gvm-instr)
+                        (gvm-instr-comment gvm-instr)))
 
-                        ((task-entry)
-                         (make-label-task-entry
-                          new-lbl
-                          (gvm-instr-frame gvm-instr)
-                          (gvm-instr-comment gvm-instr)))
+                      ((task-entry)
+                        (make-label-task-entry
+                        new-lbl
+                        (gvm-instr-frame gvm-instr)
+                        (gvm-instr-comment gvm-instr)))
 
-                        ((task-return)
-                         (make-label-task-return
-                          new-lbl
-                          (gvm-instr-frame gvm-instr)
-                          (gvm-instr-comment gvm-instr)))
+                      ((task-return)
+                        (make-label-task-return
+                        new-lbl
+                        (gvm-instr-frame gvm-instr)
+                        (gvm-instr-comment gvm-instr)))
 
-                        (else
-                         (compiler-internal-error
-                          "walk-instr, unknown 'gvm-instr':" gvm-instr)))))
-                 (gvm-instr-types-set! new-instr types-after)
-                 (instr-comment-add! new-instr 'orig-lbl orig-lbl)
-                 new-instr))
+                      (else
+                        (compiler-internal-error
+                        "walk-instr, unknown 'gvm-instr':" gvm-instr)))))
+                (gvm-instr-types-set! new-instr types-after)
+                (instr-comment-add! new-instr 'orig-lbl orig-lbl)
+                new-instr))
 
-              ((apply)
+            ((apply)
 ;;               (pprint '****apply)
-               (let* ((prim
-                       (apply-prim gvm-instr))
-                      (opnds
-                       (apply-opnds gvm-instr))
-                      (new-opnds
-                       (map walk-opnd opnds))
-                      (type-opnds
-                       (map (lambda (opnd new-opnd)
-                              (opnd-type opnd new-opnd types-before))
-                            opnds
-                            new-opnds))
-                      (args
-                       (map make-call-arg type-opnds))
-                      (call
-                       (make-call prim args))
-                      (spec-call
-                       (let* ((node (instr-comment-get gvm-instr 'node))
-                              (env (node-env node)))
-                         (if env
-                             (specialize-call call env)
-                             call)))
-                      (prim2
-                       (call-proc spec-call))
-                      (args2
-                       (call-args spec-call))
-                      (loc
-                       (walk-loc (apply-loc gvm-instr)))
-                      (type-infer
-                       (proc-obj-type-infer prim2))
-                      (dst-type
-                       (if type-infer
-                           (type-infer tctx type-opnds)
-                           (make-type-top-with-new-length-bound bb)))
-                      (types-after
-                       (if (locenv-loc? loc)
-                           (let ((dst-loc
-                                  (gvm-loc->locenv-index types-after loc)))
-                             (locenv-set types-after ;; change type of dst-loc
-                                         dst-loc
-                                         dst-type))
-                           types-after)) ;; no change
-                      (new-instr
-                       (if (and (not (proc-obj-side-effects? prim2))
-                                (type-singleton? dst-type))
-                           (make-copy
-                            (type-singleton->new-opnd dst-type)
+              (let* ((prim
+                      (apply-prim gvm-instr))
+                    (opnds
+                      (apply-opnds gvm-instr))
+                    (new-opnds
+                      (map walk-opnd opnds))
+                    (type-opnds
+                      (map (lambda (opnd new-opnd)
+                            (opnd-type opnd new-opnd types-before))
+                          opnds
+                          new-opnds))
+                    (args
+                      (map make-call-arg type-opnds))
+                    (call
+                      (make-call prim args))
+                    (spec-call
+                      (let* ((node (instr-comment-get gvm-instr 'node))
+                            (env (node-env node)))
+                        (if env
+                            (specialize-call call env)
+                            call)))
+                    (prim2
+                      (call-proc spec-call))
+                    (args2
+                      (call-args spec-call))
+                    (loc
+                      (walk-loc (apply-loc gvm-instr)))
+                    (type-infer
+                      (proc-obj-type-infer prim2))
+                    (dst-type
+                      (if type-infer
+                          (type-infer tctx type-opnds)
+                          (make-type-top-with-new-length-bound bb)))
+                    (types-after
+                      (if (locenv-loc? loc)
+                          (let ((dst-loc
+                                (gvm-loc->locenv-index types-after loc)))
+                            (locenv-set types-after ;; change type of dst-loc
+                                        dst-loc
+                                        dst-type))
+                          types-after)) ;; no change
+                    (new-instr
+                      (if (and (not (proc-obj-side-effects? prim2))
+                              (type-singleton? dst-type))
+                          (make-copy
+                          (type-singleton->new-opnd dst-type)
+                          loc
+                          (gvm-instr-frame gvm-instr)
+                          (gvm-instr-comment gvm-instr))
+                          (let ((new-opnds2
+                                (map (lambda (arg)
+                                        (let ((arg-type (call-arg-val arg)))
+                                          (if (type-singleton? arg-type)
+                                              (type-singleton->new-opnd arg-type)
+                                              (let ((i (pos-in-list arg args)))
+                                                (if i
+                                                    (list-ref new-opnds i)
+                                                    (compiler-internal-error
+                                                    "bbs-type-specialize*, can't find operand"))))))
+                                      args2)))
+                            (make-apply
+                            prim2
+                            new-opnds2
                             loc
                             (gvm-instr-frame gvm-instr)
-                            (gvm-instr-comment gvm-instr))
-                           (let ((new-opnds2
-                                  (map (lambda (arg)
-                                         (let ((arg-type (call-arg-val arg)))
-                                           (if (type-singleton? arg-type)
-                                               (type-singleton->new-opnd arg-type)
-                                               (let ((i (pos-in-list arg args)))
-                                                 (if i
-                                                     (list-ref new-opnds i)
-                                                     (compiler-internal-error
-                                                      "bbs-type-specialize*, can't find operand"))))))
-                                       args2)))
-                             (make-apply
-                              prim2
-                              new-opnds2
-                              loc
-                              (gvm-instr-frame gvm-instr)
-                              (gvm-instr-comment gvm-instr))))))
-                 (gvm-instr-types-set! new-instr types-after)
-                 new-instr))
+                            (gvm-instr-comment gvm-instr))))))
+                (gvm-instr-types-set! new-instr types-after)
+                new-instr))
 
-              ((copy)
+            ((copy)
 ;;               (pprint '****copy)
-               (let* ((opnd
-                       (copy-opnd gvm-instr))
-                      (new-opnd
-                       (walk-opnd opnd))
-                      (loc
-                       (walk-loc (copy-loc gvm-instr)))
-                      (types-before
-                       (resized-frame-types (gvm-instr-frame gvm-instr) types-before))
-                      (types-after
-                        (resized-frame-types-remove-dead
-                          (gvm-instr-frame gvm-instr)
-                          (if (locenv-loc? loc)
-                              (let ((dst-loc
-                                      (gvm-loc->locenv-index types-before loc)))
-                                (if (locenv-loc? new-opnd)
-                                    (let ((src-loc
-                                            (gvm-loc->locenv-index types-before new-opnd)))
-                                      (locenv-copy types-before dst-loc src-loc))
-                                    (locenv-set types-before
-                                                dst-loc
-                                                (opnd-type opnd new-opnd types-before))))
-                              types-before))) ;; no change
-                      (new-instr
-                       (make-copy
-                        (opnd-constantify opnd new-opnd types-before)
-                        loc
+              (let* ((opnd
+                      (copy-opnd gvm-instr))
+                    (new-opnd
+                      (walk-opnd opnd))
+                    (loc
+                      (walk-loc (copy-loc gvm-instr)))
+                    (types-before
+                      (resized-frame-types (gvm-instr-frame gvm-instr) types-before))
+                    (types-after
+                      (resized-frame-types-remove-dead
                         (gvm-instr-frame gvm-instr)
-                        (gvm-instr-comment gvm-instr))))
-                 (gvm-instr-types-set! new-instr types-after)
-                 new-instr))
-
-              ((close)
-;;               (pprint '****close) (exit 1)
-               (let loop1 ((lst (close-parms gvm-instr))
-                           (types-after (resized-frame-types
-                                          (gvm-instr-frame gvm-instr)
-                                          types-before)))
-                 (if (pair? lst)
-                     (loop1
-                      (cdr lst)
-                      (let* ((parms (car lst))
-                             (loc (walk-loc (closure-parms-loc parms))))
                         (if (locenv-loc? loc)
                             (let ((dst-loc
-                                   (gvm-loc->locenv-index types-after loc)))
-                              (locenv-set types-after
-                                          dst-loc
-                                          type-procedure))
-                            types-after)))
-                     (let loop2 ((lst (close-parms gvm-instr))
-                                 (rev-parms '()))
-                       (if (pair? lst)
-                           (loop2
-                            (cdr lst)
-                            (cons
-                             (let* ((parms
-                                     (car lst))
-                                    (lbl
-                                     (closure-parms-lbl parms))
-                                    (entry-bb
-                                     (lbl-num->bb lbl bbs))
-                                    (entry-label
-                                     (bb-label-instr entry-bb))
-                                    (opnds
-                                     (closure-parms-opnds parms))
-                                    (new-opnds
-                                     (map walk-opnd opnds))
-                                    (types-entry
-                                     (let loop ((opnds opnds)
-                                                (new-opnds new-opnds)
-                                                (i 1)
-                                                (types-entry
-                                                 (generic-entry-frame-types
-                                                  (gvm-instr-frame entry-label))))
-                                       (if (pair? new-opnds)
-                                           (loop
-                                            (cdr opnds)
-                                            (cdr new-opnds)
-                                            (+ i 1)
-                                            (let* ((opnd
-                                                    (car opnds))
-                                                   (new-opnd
-                                                    (car new-opnds))
-                                                   (dst-loc
-                                                    (gvm-loc->locenv-index
-                                                     types-entry
-                                                     (make-clo #f i)))
-                                                   (type
-                                                    (opnd-type opnd
-                                                               new-opnd
-                                                               types-after)))
-                                              (locenv-set types-entry
-                                                          dst-loc
-                                                          type)))
-                                           types-entry))))
-                               (make-closure-parms
-                                (closure-parms-loc parms)
-                                (reach* lbl #f types-entry)
-                                new-opnds))
-                             rev-parms))
-                           (let ((new-instr
-                                  (make-close
-                                   (reverse rev-parms)
-                                   (gvm-instr-frame gvm-instr)
-                                   (gvm-instr-comment gvm-instr))))
-                             (gvm-instr-types-set! new-instr
-                                                   (resized-frame-types-remove-dead
-                                                      (gvm-instr-frame gvm-instr)
-                                                      types-after))
-                             new-instr))))))
+                                    (gvm-loc->locenv-index types-before loc)))
+                              (if (locenv-loc? new-opnd)
+                                  (let ((src-loc
+                                          (gvm-loc->locenv-index types-before new-opnd)))
+                                    (locenv-copy types-before dst-loc src-loc))
+                                  (locenv-set types-before
+                                              dst-loc
+                                              (opnd-type opnd new-opnd types-before))))
+                            types-before))) ;; no change
+                    (new-instr
+                      (make-copy
+                      (opnd-constantify opnd new-opnd types-before)
+                      loc
+                      (gvm-instr-frame gvm-instr)
+                      (gvm-instr-comment gvm-instr))))
+                (gvm-instr-types-set! new-instr types-after)
+                new-instr))
 
-              ((ifjump)
+            ((close)
+;;               (pprint '****close) (exit 1)
+              (let loop1 ((lst (close-parms gvm-instr))
+                          (types-after (resized-frame-types
+                                        (gvm-instr-frame gvm-instr)
+                                        types-before)))
+                (if (pair? lst)
+                    (loop1
+                    (cdr lst)
+                    (let* ((parms (car lst))
+                            (loc (walk-loc (closure-parms-loc parms))))
+                      (if (locenv-loc? loc)
+                          (let ((dst-loc
+                                  (gvm-loc->locenv-index types-after loc)))
+                            (locenv-set types-after
+                                        dst-loc
+                                        type-procedure))
+                          types-after)))
+                    (let loop2 ((lst (close-parms gvm-instr))
+                                (rev-parms '()))
+                      (if (pair? lst)
+                          (loop2
+                          (cdr lst)
+                          (cons
+                            (let* ((parms
+                                    (car lst))
+                                  (lbl
+                                    (closure-parms-lbl parms))
+                                  (entry-bb
+                                    (lbl-num->bb lbl bbs))
+                                  (entry-label
+                                    (bb-label-instr entry-bb))
+                                  (opnds
+                                    (closure-parms-opnds parms))
+                                  (new-opnds
+                                    (map walk-opnd opnds))
+                                  (types-entry
+                                    (let loop ((opnds opnds)
+                                              (new-opnds new-opnds)
+                                              (i 1)
+                                              (types-entry
+                                                (generic-entry-frame-types
+                                                (gvm-instr-frame entry-label))))
+                                      (if (pair? new-opnds)
+                                          (loop
+                                          (cdr opnds)
+                                          (cdr new-opnds)
+                                          (+ i 1)
+                                          (let* ((opnd
+                                                  (car opnds))
+                                                  (new-opnd
+                                                  (car new-opnds))
+                                                  (dst-loc
+                                                  (gvm-loc->locenv-index
+                                                    types-entry
+                                                    (make-clo #f i)))
+                                                  (type
+                                                  (opnd-type opnd
+                                                              new-opnd
+                                                              types-after)))
+                                            (locenv-set types-entry
+                                                        dst-loc
+                                                        type)))
+                                          types-entry))))
+                              (make-closure-parms
+                              (closure-parms-loc parms)
+                              (reach* lbl types-entry)
+                              new-opnds))
+                            rev-parms))
+                          (let ((new-instr
+                                (make-close
+                                  (reverse rev-parms)
+                                  (gvm-instr-frame gvm-instr)
+                                  (gvm-instr-comment gvm-instr))))
+                            (gvm-instr-types-set! new-instr
+                                                  (resized-frame-types-remove-dead
+                                                    (gvm-instr-frame gvm-instr)
+                                                    types-after))
+                            new-instr))))))
+
+            ((ifjump)
 ;;               (pprint '****ifjump)
-               (let* ((test
-                       (ifjump-test gvm-instr))
-                      (opnds
-                       (ifjump-opnds gvm-instr))
-                      (new-opnds
-                       (map walk-opnd opnds))
-                      (type-narrow
-                       (proc-obj-type-narrow test))
-                      (result-types
-                       (and type-narrow
-                            (type-narrow
-                             tctx
-                             (map (lambda (opnd new-opnd)
-                                    (opnd-type opnd new-opnd types-before))
-                                  opnds
-                                  new-opnds))))
-                      (new-instr
-                       (if (pair? result-types)
+              (let* ((test
+                      (ifjump-test gvm-instr))
+                    (opnds
+                      (ifjump-opnds gvm-instr))
+                    (new-opnds
+                      (map walk-opnd opnds))
+                    (type-narrow
+                      (proc-obj-type-narrow test))
+                    (result-types
+                      (and type-narrow
+                          (type-narrow
+                            tctx
+                            (map (lambda (opnd new-opnd)
+                                  (opnd-type opnd new-opnd types-before))
+                                opnds
+                                new-opnds))))
+                    (new-instr
+                      (if (pair? result-types)
 
-                           (let ()
+                          (let ()
 
-                             (define (narrow opnd-types)
-                               (and opnd-types
-                                    (locenv-update types-after new-opnds opnd-types)))
+                            (define (narrow opnd-types)
+                              (and opnd-types
+                                  (locenv-update types-after new-opnds opnd-types)))
 
-                             (let* ((true-types
-                                     (narrow (car result-types)))
-                                    (true-lbl
-                                     (and true-types
-                                          (reach* (ifjump-true gvm-instr)
-                                                  new-lbl
-                                                  true-types)))
-                                    (false-types
-                                     (narrow (cdr result-types)))
-                                    (false-lbl
-                                     (and false-types
-                                          (reach* (ifjump-false gvm-instr)
-                                                  new-lbl
-                                                  false-types))))
-                               (if true-lbl
-                                   (if false-lbl
-                                       (make-ifjump
-                                        test
-                                        new-opnds
-                                        true-lbl
-                                        false-lbl
-                                        (ifjump-poll? gvm-instr)
-                                        (gvm-instr-frame gvm-instr)
-                                        (gvm-instr-comment gvm-instr))
-                                       (make-jump
-                                        (make-lbl true-lbl)
-                                        #f
-                                        #f
-                                        (ifjump-poll? gvm-instr)
-                                        #f
-                                        (gvm-instr-frame gvm-instr)
-                                        (gvm-instr-comment gvm-instr)))
-                                   (if false-lbl
-                                       (make-jump
-                                        (make-lbl false-lbl)
-                                        #f
-                                        #f
-                                        (ifjump-poll? gvm-instr)
-                                        #f
-                                        (gvm-instr-frame gvm-instr)
-                                        (gvm-instr-comment gvm-instr))
-                                       (error "impossible true and false outcomes from test" (proc-obj-name test))))))
-                           (make-ifjump
-                            test
-                            new-opnds
-                            (reach* (ifjump-true gvm-instr)
-                                    new-lbl
-                                    types-after)
-                            (reach* (ifjump-false gvm-instr)
-                                    new-lbl
-                                    types-after)
-                            (ifjump-poll? gvm-instr)
-                            (gvm-instr-frame gvm-instr)
-                            (gvm-instr-comment gvm-instr)))))
-                 (gvm-instr-types-set! new-instr types-after)
-                 new-instr))
+                            (let* ((true-types
+                                    (narrow (car result-types)))
+                                  (true-lbl
+                                    (and true-types
+                                        (reach* (ifjump-true gvm-instr)
+                                                true-types)))
+                                  (false-types
+                                    (narrow (cdr result-types)))
+                                  (false-lbl
+                                    (and false-types
+                                        (reach* (ifjump-false gvm-instr)
+                                                false-types))))
+                              (if true-lbl
+                                  (if false-lbl
+                                      (make-ifjump
+                                      test
+                                      new-opnds
+                                      true-lbl
+                                      false-lbl
+                                      (ifjump-poll? gvm-instr)
+                                      (gvm-instr-frame gvm-instr)
+                                      (gvm-instr-comment gvm-instr))
+                                      (make-jump
+                                      (make-lbl true-lbl)
+                                      #f
+                                      #f
+                                      (ifjump-poll? gvm-instr)
+                                      #f
+                                      (gvm-instr-frame gvm-instr)
+                                      (gvm-instr-comment gvm-instr)))
+                                  (if false-lbl
+                                      (make-jump
+                                      (make-lbl false-lbl)
+                                      #f
+                                      #f
+                                      (ifjump-poll? gvm-instr)
+                                      #f
+                                      (gvm-instr-frame gvm-instr)
+                                      (gvm-instr-comment gvm-instr))
+                                      (error "impossible true and false outcomes from test" (proc-obj-name test))))))
+                          (make-ifjump
+                          test
+                          new-opnds
+                          (reach* (ifjump-true gvm-instr)
+                                  types-after)
+                          (reach* (ifjump-false gvm-instr)
+                                  types-after)
+                          (ifjump-poll? gvm-instr)
+                          (gvm-instr-frame gvm-instr)
+                          (gvm-instr-comment gvm-instr)))))
+                (gvm-instr-types-set! new-instr types-after)
+                new-instr))
 
-              ((switch)
+            ((switch)
 ;;               (pprint '****switch) (exit 1)
-               (let ((opnd (walk-opnd (switch-opnd gvm-instr))))
-                 '(for-each (lambda (c) (scan-obj (switch-case-obj c)))
-                            (switch-cases gvm-instr))
-                 types-after))
+              (let ((opnd (walk-opnd (switch-opnd gvm-instr))))
+                '(for-each (lambda (c) (scan-obj (switch-case-obj c)))
+                          (switch-cases gvm-instr))
+                types-after))
 
-              ((jump)
+            ((jump)
 ;;               (pprint '****jump)
-               (let* ((opnd
-                       (jump-opnd gvm-instr))
-                      (ret
-                       (jump-ret gvm-instr))
-                      (types-return
-                       (and ret
-                            (let* ((result-loc
-                                    (gvm-loc->locenv-index types-after (make-reg 1)))
-                                   (types-at-ret
-                                    (if (and (jump-safe? gvm-instr)
-                                             (locenv-loc? opnd))
-                                        (locenv-set types-after
-                                                    (gvm-loc->locenv-index types-after opnd)
-                                                    type-procedure)
-                                        types-after)))
-                              (locenv-set types-at-ret
-                                          result-loc
-                                          (if use-return-point-versioning?
-                                              (make-type-top-with-new-length-bound bb)
-                                              type-top)))))
-                      (new-ret
-                       (and ret
-                            (reach-ret* ret
-                                        new-lbl
-                                        types-return))) ;;;;;;;;;TODO
-                      (types-after
-                       (if new-ret
-                           (locenv-set
-                            types-after
-                            (gvm-loc->locenv-index types-after return-addr-reg)
-                            (make-type-from-lbl-obj
-                             (make-lbl-obj ret new-ret 'return types-return)))
-                           types-after))
-                      (new-opnd
-                       (if (locenv-loc? opnd)
-                           (let ((type (opnd-type opnd opnd types-before)))
-                             (if (type-singleton? type)
-                                 (let ((val (type-singleton-val type)))
-                                   (if (lbl-obj? val)
-                                       (let* ((lbl (lbl-obj-lbl val))
-                                              (types (lbl-obj-types val))
-                                              (merged-types
-                                               (if types
-                                                   (locenv-merge types
-                                                                 types-after
-                                                                 0
-                                                                 (lambda (type1 type2)
-                                                                   type2))
-                                                   types-after)))
-                                         (make-lbl (reach* lbl
-                                                           new-lbl
-                                                           merged-types)))
-                                       (make-obj val)))
-                                 opnd))
-                           (if (lbl? opnd)
-                               (make-lbl (reach* (lbl-num opnd)
-                                                 new-lbl
-                                                 types-after))
-                               opnd)))
-                      (new-instr
-                       (make-jump
-                        new-opnd
-                        new-ret
-                        (jump-nb-args gvm-instr)
-                        (jump-poll? gvm-instr)
-                        (if (type-motley-included?
-                             (type-motley-force tctx
-                                                (opnd-type opnd new-opnd types-before))
-                             type-procedure)
-                            #f
-                            (jump-safe? gvm-instr))
-                        (gvm-instr-frame gvm-instr)
-                        (gvm-instr-comment gvm-instr))))
-                 (gvm-instr-types-set! new-instr types-after)
-                 new-instr)))))
+              (let* ((opnd
+                      (jump-opnd gvm-instr))
+                    (ret
+                      (jump-ret gvm-instr))
+                    (types-return
+                      (and ret
+                          (let* ((result-loc
+                                  (gvm-loc->locenv-index types-after (make-reg 1)))
+                                  (types-at-ret
+                                  (if (and (jump-safe? gvm-instr)
+                                            (locenv-loc? opnd))
+                                      (locenv-set types-after
+                                                  (gvm-loc->locenv-index types-after opnd)
+                                                  type-procedure)
+                                      types-after)))
+                            (locenv-set types-at-ret
+                                        result-loc
+                                        (if use-return-point-versioning?
+                                            (make-type-top-with-new-length-bound bb)
+                                            type-top)))))
+                    (new-ret
+                      (and ret
+                          (reach-ret* ret
+                                      new-lbl
+                                      types-return))) ;;;;;;;;;TODO
+                    (types-after
+                      (if new-ret
+                          (locenv-set
+                          types-after
+                          (gvm-loc->locenv-index types-after return-addr-reg)
+                          (make-type-from-lbl-obj
+                            (make-lbl-obj ret new-ret 'return types-return)))
+                          types-after))
+                    (new-opnd
+                      (if (locenv-loc? opnd)
+                          (let ((type (opnd-type opnd opnd types-before)))
+                            (if (type-singleton? type)
+                                (let ((val (type-singleton-val type)))
+                                  (if (lbl-obj? val)
+                                      (let* ((lbl (lbl-obj-lbl val))
+                                            (types (lbl-obj-types val))
+                                            (merged-types
+                                              (if types
+                                                  (locenv-merge types
+                                                                types-after
+                                                                0
+                                                                (lambda (type1 type2)
+                                                                  type2))
+                                                  types-after)))
+                                        (make-lbl (reach* lbl
+                                                          merged-types)))
+                                      (make-obj val)))
+                                opnd))
+                          (if (lbl? opnd)
+                              (make-lbl (reach* (lbl-num opnd)
+                                                types-after))
+                              opnd)))
+                    (new-instr
+                      (make-jump
+                      new-opnd
+                      new-ret
+                      (jump-nb-args gvm-instr)
+                      (jump-poll? gvm-instr)
+                      (if (type-motley-included?
+                            (type-motley-force tctx
+                                              (opnd-type opnd new-opnd types-before))
+                            type-procedure)
+                          #f
+                          (jump-safe? gvm-instr))
+                      (gvm-instr-frame gvm-instr)
+                      (gvm-instr-comment gvm-instr))))
+                (gvm-instr-types-set! new-instr types-after)
+                new-instr)))))
 
-          (let ((new-label-instr (walk-instr (bb-label-instr bb) types-before)))
-            (set! new-bb (make-bb new-label-instr new-bbs)))
+        (let ((new-label-instr (walk-instr (bb-label-instr bb) types-before)))
+          (set! new-bb (make-bb new-label-instr new-bbs)))
 
-          (let ((label-instr (bb-label-instr new-bb)))
-            (instr-comment-add!
-             label-instr
-             'cfg-bb-info
-             (list
-              (cons 'info
-                    (string-append (format-gvm-lbl orig-lbl '())
-                                   "->"
-                                   (format-gvm-lbl new-lbl '(new)))))))
+        (let ((label-instr (bb-label-instr new-bb)))
+          (instr-comment-add!
+            label-instr
+            'cfg-bb-info
+            (list
+            (cons 'info
+                  (string-append (format-gvm-lbl orig-lbl '())
+                                  "->"
+                                  (format-gvm-lbl new-lbl '(new)))))))
 
-          (let loop ((instrs
-                      (bb-non-branch-instrs bb))
-                     (types-before
-                      (gvm-instr-types (bb-label-instr new-bb))))
-            (if (pair? instrs)
-                (let ((new-instr
-                       (walk-instr (car instrs) types-before)))
-                  (bb-put-non-branch! new-bb new-instr)
-                  (loop (cdr instrs)
-                        (gvm-instr-types new-instr)))
-                (let ((new-instr
-                       (walk-instr (bb-branch-instr bb) types-before)))
-                  (bb-put-branch! new-bb new-instr))))))
+        (let loop ((instrs
+                    (bb-non-branch-instrs bb))
+                    (types-before
+                    (gvm-instr-types (bb-label-instr new-bb))))
+          (if (pair? instrs)
+              (let ((new-instr
+                      (walk-instr (car instrs) types-before)))
+                (bb-put-non-branch! new-bb new-instr)
+                (loop (cdr instrs)
+                      (gvm-instr-types new-instr)))
+              (let ((new-instr
+                      (walk-instr (bb-branch-instr bb) types-before)))
+                (bb-put-branch! new-bb new-instr))))))
 
-      (define (get-bb-versions bb)
-        (get-bb-versions-from-lbl (bb-lbl-num bb)))
+    (define (get-bb-versions bb)
+      (get-bb-versions-from-lbl (bb-lbl-num bb)))
 
-      (define (get-bb-versions-from-lbl lbl)
-        (or (table-ref versions lbl #f)
-            (let ((bb-versions
-                    (if track-version-history?
-                        (vector (make-table test: locenv-eqv?)
-                                (make-table test: locenv-eqv?)
-                                (make-text-grid)
-                                (make-table))
-                        (vector (make-table test: locenv-eqv?)
-                                (make-table test: locenv-eqv?)))))
-              (table-set! versions lbl bb-versions)
-              bb-versions)))
-      
-      (define (bb-versions-active-lbl-get bb-versions types-before)
-        (table-ref (vector-ref bb-versions 0) types-before #f))
-      (define (bb-versions-active-lbl-remove! bb-versions types-before)
-        (table-set! (vector-ref bb-versions 0) types-before))
-      (define (bb-versions-active-lbl-add! bb-versions types-before version-lbl)
-        (bb-versions-all-lbl-add! bb-versions types-before version-lbl)
-        (table-set! (vector-ref bb-versions 0) types-before version-lbl))
-      (define (bb-versions-active-lbl->list bb-versions #!key (sort? use-directional-widening?))
-        (if sort?
-            (list-sort (lambda (v1 v2) (< (cdr v1) (cdr v2)))
-                  (table->list (vector-ref bb-versions 0)))
-            (table->list (vector-ref bb-versions 0))))
-      (define (bb-versions-active-lbl-for-each f bb-versions)
-        (table-for-each f (vector-ref bb-versions 0)))
-      (define (bb-versions-active-lbl-length bb-versions)
-        (table-length (vector-ref bb-versions 0)))
-      (define (bb-versions-active-lbl-remove-unreachable! bb-versions)
-        (define changed? #f)
+    (define (get-bb-versions-from-lbl lbl)
+      (or (table-ref versions lbl #f)
+          (let ((bb-versions
+                  (if track-version-history?
+                      (vector (make-table test: locenv-eqv?)
+                              (make-table test: locenv-eqv?)
+                              (make-text-grid)
+                              (make-table))
+                      (vector (make-table test: locenv-eqv?)
+                              (make-table test: locenv-eqv?)))))
+            (table-set! versions lbl bb-versions)
+            bb-versions)))
+    
+    (define (bb-versions-active-lbl-get bb-versions types-before)
+      (table-ref (vector-ref bb-versions 0) types-before #f))
+    (define (bb-versions-active-lbl-remove! bb-versions types-before)
+      (table-set! (vector-ref bb-versions 0) types-before))
+    (define (bb-versions-active-lbl-add! bb-versions types-before version-lbl)
+      (bb-versions-all-lbl-add! bb-versions types-before version-lbl)
+      (table-set! (vector-ref bb-versions 0) types-before version-lbl))
+    (define (bb-versions-active-lbl->list bb-versions #!key (sort? use-directional-widening?))
+      (if sort?
+          (list-sort (lambda (v1 v2) (< (cdr v1) (cdr v2)))
+                (table->list (vector-ref bb-versions 0)))
+          (table->list (vector-ref bb-versions 0))))
+    (define (bb-versions-active-lbl-for-each f bb-versions)
+      (table-for-each f (vector-ref bb-versions 0)))
+    (define (bb-versions-active-lbl-length bb-versions)
+      (table-length (vector-ref bb-versions 0)))
+    (define (bb-versions-active-lbl-remove-unreachable! bb-versions)
+      (define changed? #f)
+      (for-each
+        (lambda (type-lbl)
+          (if (not (reachable? (replacement-lbl-num (cdr type-lbl))))
+              (begin
+                (set! changed? #t)
+                (bb-versions-active-lbl-remove! bb-versions (car type-lbl)))))
+        (bb-versions-active-lbl->list bb-versions))
+      changed?)
+
+    (define (bb-versions-all-lbl-get bb-versions types-before)
+      (table-ref (vector-ref bb-versions 1) types-before #f))
+    (define (bb-versions-all-lbl-add! bb-versions types-before version-lbl)
+      (set-version-types! version-lbl types-before)
+      (table-set! (vector-ref bb-versions 1) types-before version-lbl))
+
+    (define (bb-versions-text-grid bb-versions)
+      (vector-ref bb-versions 2))
+
+    (define (bb-versions-index-table bb-versions)
+      (vector-ref bb-versions 3))
+
+    (define (need-merge? bb)
+      (let* ((lbl (bb-lbl-num bb))
+              (bb-versions (get-bb-versions bb)))
+        (> (bb-versions-active-lbl-length bb-versions) (max 1 (bb-version-limit bb)))))
+
+    (define (onrevive lbl)
+      (if (new-lbl? lbl new-bbs)
+          (let* ((orig-lbl (orig-lbl-mapping-ref lbl))
+                  (bb (lbl-num->bb orig-lbl bbs))
+                  (bb-versions (get-bb-versions-from-lbl orig-lbl)))
+            ;(pp (list 'onrevive lbl))
+            ;(if (= lbl 2) (pp (list 'revive 2)))
+            (bb-versions-active-lbl-add!
+              bb-versions
+              (get-version-types lbl)
+              lbl)
+            (queue-put! work-queue (make-queue-task bb lbl)))))
+
+    (define (onkill lbl)
+      (let* ((orig-lbl (orig-lbl-mapping-ref lbl))
+              (bb-versions (get-bb-versions-from-lbl orig-lbl)))
+        ;(pp (list 'onkill lbl))
+        ;(if (= lbl 2) (pp (list 'kill 2)))
+        (bb-versions-active-lbl-remove-unreachable! bb-versions)))
+
+    (define (merge bb)
+      (let* ((lbl (bb-lbl-num bb))
+              (bb-versions (get-bb-versions bb))
+              (types-lbl-vect (list->vector (bb-versions-active-lbl->list bb-versions)))
+              (in-out-details (find-merge-candidates tctx types-lbl-vect))
+              (in (vector-ref in-out-details 0))
+              (out (vector-ref in-out-details 1))
+              (details (vector-ref in-out-details 2))
+              (versions-to-merge (map (lambda (i) (vector-ref types-lbl-vect i)) in))
+              (versions-to-keep (map (lambda (i) (vector-ref types-lbl-vect i)) out))
+              (merged-types (types-merge-multi (map car versions-to-merge) #t))
+              (existing-lbl-of-merged-type 
+                (bb-versions-all-lbl-get bb-versions merged-types))
+              (new-lbl (or (and existing-lbl-of-merged-type
+                                (replacement-lbl-num existing-lbl-of-merged-type))
+                            (new-lbl! lbl)))
+              (merged-types (if (not existing-lbl-of-merged-type)
+                                merged-types
+                                (get-version-types new-lbl))))
+
+        (bb-versions-active-lbl-add! bb-versions merged-types new-lbl)
+
         (for-each
-          (lambda (type-lbl)
-            (if (not (reachable? (replacement-lbl-num (cdr type-lbl))))
-                (begin
-                  (set! changed? #t)
-                  (bb-versions-active-lbl-remove! bb-versions (car type-lbl)))))
-          (bb-versions-active-lbl->list bb-versions))
-        changed?)
+          (lambda (types-lbl)
+            (let ((types (car types-lbl))
+                  (lbl (cdr types-lbl)))
+              (table-set! lbl-mapping lbl new-lbl)
+              ;(if (or (= lbl 2) (= new-lbl 2)) (pp (list 'replacing lbl 'by new-lbl)))
+              (if (not (eq? lbl new-lbl))
+                  (replace!
+                    BFSTree lbl new-lbl
+                    onrevive
+                    onkill))))
+          versions-to-merge)
 
-      (define (bb-versions-all-lbl-get bb-versions types-before)
-        (table-ref (vector-ref bb-versions 1) types-before #f))
-      (define (bb-versions-all-lbl-add! bb-versions types-before version-lbl)
-        (set-version-types! version-lbl types-before)
-        (table-set! (vector-ref bb-versions 1) types-before version-lbl))
+        ;(if (= new-lbl 2) (pp (list 'merged 'created new-lbl 'reachable: (reachable? new-lbl))))
 
-      (define (bb-versions-text-grid bb-versions)
-        (vector-ref bb-versions 2))
+        (for-each
+          (lambda (type-lbl) (bb-versions-active-lbl-remove! bb-versions (car type-lbl)))
+          versions-to-merge)
 
-      (define (bb-versions-index-table bb-versions)
-        (vector-ref bb-versions 3))
+        (track-version-history lbl (list 'merge #f details)) ;; track history of versions
 
-      (define (need-merge? bb)
-        (let* ((lbl (bb-lbl-num bb))
-               (bb-versions (get-bb-versions bb)))
-          (> (bb-versions-active-lbl-length bb-versions) (max 1 (bb-version-limit bb)))))
+        (if (new-lbl? new-lbl new-bbs)
+            (queue-put! work-queue (make-queue-task bb new-lbl)))))
 
-      (define (merge bb)
-        (define (must-recompute-reachability? versions-to-merge merge-result)
-          ;; Reachability must be recomputed unless one of the following is true for ALL merged version:
-          ;;  1) The merged version is new, it has not been walked yet and so has no children
-          ;;  2) The merged version is the version resulting from the merge
-          (let loop ((versions versions-to-merge))
-            (cond
-              ((null? versions) #f)
-              ((eq? (car versions) merge-result) (loop (cdr versions)))
-              ((new-lbl? (car versions) new-bbs) (loop (cdr versions)))
-              (else #t))))
+    (define bfs-source-node -1)
+    (define BFSTree (make-BFSTree bfs-source-node))
 
-        (let* ((lbl (bb-lbl-num bb))
-               (bb-versions (get-bb-versions bb))
-               (types-lbl-vect (list->vector (bb-versions-active-lbl->list bb-versions)))
-               (in-out-details (find-merge-candidates tctx types-lbl-vect))
-               (in (vector-ref in-out-details 0))
-               (out (vector-ref in-out-details 1))
-               (details (vector-ref in-out-details 2))
-               (versions-to-merge (map (lambda (i) (vector-ref types-lbl-vect i)) in))
-               (versions-to-keep (map (lambda (i) (vector-ref types-lbl-vect i)) out))
-               (merged-types (types-merge-multi (map car versions-to-merge) #t))
-               (existing-lbl-of-merged-type 
-                  (bb-versions-all-lbl-get bb-versions merged-types))
-               (new-lbl (or (and existing-lbl-of-merged-type
-                                 (replacement-lbl-num existing-lbl-of-merged-type))
-                             (new-lbl! lbl)))
-               (merged-types (if (not existing-lbl-of-merged-type)
-                                 merged-types
-                                 (get-version-types new-lbl))))
+    (let* ((entry-lbl
+            (bbs-entry-lbl-num bbs))
+            (entry-bb
+            (lbl-num->bb entry-lbl bbs))
+            (entry-label
+            (bb-label-instr entry-bb))
+            (types-before
+            (generic-entry-frame-types (gvm-instr-frame entry-label))))
 
-          (for-each
-            (lambda (types-lbl)
-              (let ((types (car types-lbl))
-                    (lbl (cdr types-lbl)))
-                (table-set! lbl-mapping lbl new-lbl)))
-            versions-to-merge)
+      (bbs-entry-lbl-num-set! new-bbs (reach entry-lbl #f (make-bbvctx types-before)))
+      (add-edge! BFSTree bfs-source-node (bbs-entry-lbl-num new-bbs) onrevive)
+      (let loop ()
+        (let* ((task (queue-get! work-queue))
+                (bb (queue-task-bb task))
+                (version-lbl (queue-task-version-lbl task))
+                (types (get-version-types version-lbl)))
 
-          (for-each
-            (lambda (type-lbl) (bb-versions-active-lbl-remove! bb-versions (car type-lbl)))
-            versions-to-merge)
-          (bb-versions-active-lbl-add! bb-versions merged-types new-lbl)
+          ;(if (= version-lbl 2) (pp (list 'dequeued 2 'rechable: (reachable? version-lbl))))
 
-          (track-version-history lbl (list 'merge #f details)) ;; track history of versions
-
-          (if (new-lbl? new-lbl new-bbs)
-              (queue-put! work-queue (make-queue-task bb new-lbl)))
-          
-          ;; update reachability
-          (for-each
-            (lambda (lbl) (reachability-set! lbl #f))
-            (map cdr versions-to-merge))
-          (reachability-set! new-lbl #t) ;; order matters since the result could be in the versions to merge
-
-          (if (must-recompute-reachability? (map cdr versions-to-merge) new-lbl) (bbs-cleanup))))
-
-      (let* ((entry-lbl
-              (bbs-entry-lbl-num bbs))
-             (entry-bb
-              (lbl-num->bb entry-lbl bbs))
-             (entry-label
-              (bb-label-instr entry-bb))
-             (types-before
-              (generic-entry-frame-types (gvm-instr-frame entry-label))))
-
-        (bbs-entry-lbl-num-set! new-bbs (reach entry-lbl #f (make-bbvctx types-before)))
-        (let loop ()
-          (let* ((task (queue-get! work-queue))
-                 (bb (queue-task-bb task))
-                 (version-lbl (queue-task-version-lbl task))
-                 (types (get-version-types version-lbl)))
-
+          (when (reachable? version-lbl)
             (if (need-merge? bb) (merge bb))
+            (walk-bb bb types version-lbl))
+          
+          (if (not (queue-empty? work-queue)) (loop))))
 
-            ;; check if still reachable before walk
-            (if (reachable? version-lbl) (walk-bb bb types version-lbl))
-            
-            (if (not (queue-empty? work-queue)) (loop)))))
-              
-        ;(bbs-cleanup)
-        ;(all-reachables-exist?)
-      )
+      ;(pp (list 2 'is-reachable (reachable? 2)))
+      ;(pp (list 2 'is-pending (not (not (new-lbl? 2 new-bbs)))))
+      (bbs-cleanup)))
 
   (define (finalize)
 
