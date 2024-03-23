@@ -23,7 +23,7 @@
 (define (set-length set) (table-length set))
 (define (set-empty? set) (= (set-length set) 0))
 (define (set-for-each f set) (table-for-each (lambda (k _) (f k)) set))
-(define (set-search f set) (table-search (lambda (k _) (f k)) set))
+(define (set-search f set) (table-search (lambda (k _) (and (f k) k)) set))
 (define (set->list set) (map car (table->list set)))
 
 (define (table-ref-or-set-default! table x)
@@ -164,24 +164,13 @@
     ((not (parent? tree to from)) ;; edge not in BFS, can be removed safely
       (remove-friend! tree from to))
     (else
-      (let* ((parent-rank (get-rank tree from))
-             (adopter
-              (friendlies-search
-                (lambda (f) (= (get-rank tree f) parent-rank))
-                tree
-                to)))
-        (if adopter
-          (begin
-            (remove-parent! tree to)
-            (set-parent! tree to adopter))
-          (remove-parent-edge! tree to))))))
+      (remove-parent-edge! tree to))))
 
 (define (remove-parent-edge! tree to)
   (define loose-queue (make-queue))
   (define catch-queue (make-queue))
   (define loose-set (make-set))
   (define anchor-table (make-table))
-  (define cliff-edge (get-rank tree to))
 
   (define (loosen! node)
     (let* ((rank (get-rank tree node))
@@ -201,20 +190,42 @@
            (bucket (table-ref anchor-table rank #f)))
       (and bucket (set-contains? bucket node))))
 
-  (define (drop node)
-    (when (> (get-rank tree node) cliff-edge)
-      (loosen! node)
+  (define (drop to)
+    (define drop-queue (make-queue))
 
-      ;; DFS across subtree to find loose nodes
-      (children-for-each
-        (lambda (child) (if (not (loose? child)) (drop child)))
-        tree
-        node)
-      (friendlies-for-each
-        (lambda (friendly)
-          (if (not (loose? friendly)) (anchor! friendly)))
-        tree
-        node)))
+    (queue-put! drop-queue to)
+    (queue-put! drop-queue (get-rank tree (get-parent tree to)))
+
+    (remove-parent! tree to)
+
+    (do () ((queue-empty? drop-queue))
+      (let* ((node (queue-get! drop-queue))
+             (parent-rank (queue-get! drop-queue))
+             (adopter
+               (friendlies-search
+                   (lambda (f) (= (get-rank tree f) parent-rank))
+                   tree
+                   node)))
+        (if adopter
+          ;; preemptively choose a safe parent
+          ;; since we are doing a BFS for possibly loose nodes, a friendly
+          ;; with the same rank as parent cannot be loose
+          (set-parent! tree node adopter)
+          (let ((rank (get-rank tree node)))
+            (loosen! node)
+
+            ;; DFS across subtree to find loose nodes
+            (children-for-each
+              (lambda (child)
+                (queue-put! drop-queue child)
+                (queue-put! drop-queue rank))
+              tree
+              node)
+            (friendlies-for-each
+              (lambda (friendly)
+                (if (not (loose? friendly)) (anchor! friendly)))
+              tree
+              node))))))
 
   (define (catch node)
     (neighbors-for-each
@@ -226,9 +237,6 @@
       tree
       node))
 
-  (remove-parent! tree to)
-  ;; the rank will increase by at least 1 and this removes a check from (drop node)
-  (set-rank! tree to (+ (get-rank tree to) 1))
   (drop to)
 
   (let* ((cmp (lambda (x y) (< (car x) (car y))))
@@ -320,7 +328,7 @@
         (cons (make-instruction kind edge)
               (random-instructions (- n 1) delete-sparsity)))))
 
-  (let* ((instructions (random-instructions 25 (+ 5 (random-integer 15))))
+  (let* ((instructions (random-instructions 40 (+ 1 (random-integer 10))))
          (_ (when debug (pp 'INSTRUCTIONS:) (for-each pp (map lift-instruction instructions))))
          (expected-result (get-test-expected-result interpret-test instructions fuzzy-test-N))
          (result (run interpret-test instructions fuzzy-test-N)))
@@ -453,7 +461,7 @@
           (loop (cdr instructions) minimal)
           (loop (cdr instructions) without))))))
 
-(fuzzy-test 10000 debug: #f)
+(fuzzy-test 20000 debug: #f)
 (run-all
   (list test1)
   (list test2)
