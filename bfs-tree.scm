@@ -129,6 +129,8 @@
   (children-for-each f tree x))
 (define (friendlies-for-each f tree x)
   (set-for-each f (table-ref-or-set-default! (BFSTree-friendlies tree) x)))
+(define (friendlies-search f tree x)
+  (set-search f (table-ref-or-set-default! (BFSTree-friendlies tree) x)))
     
 (define (source? tree x)
   (= (BFSTree-source tree) x))
@@ -162,13 +164,24 @@
     ((not (parent? tree to from)) ;; edge not in BFS, can be removed safely
       (remove-friend! tree from to))
     (else
-      (remove-parent-edge! tree to))))
+      (let* ((parent-rank (get-rank tree from))
+             (adopter
+              (friendlies-search
+                (lambda (f) (= (get-rank tree f) parent-rank))
+                tree
+                to)))
+        (if adopter
+          (begin
+            (remove-parent! tree to)
+            (set-parent! tree to adopter))
+          (remove-parent-edge! tree to))))))
 
 (define (remove-parent-edge! tree to)
   (define loose-queue (make-queue))
   (define catch-queue (make-queue))
   (define loose-set (make-set))
   (define anchor-table (make-table))
+  (define cliff-edge (get-rank tree to))
 
   (define (loosen! node)
     (let* ((rank (get-rank tree node))
@@ -189,18 +202,19 @@
       (and bucket (set-contains? bucket node))))
 
   (define (drop node)
-    (loosen! node)
+    (when (>= (get-rank tree node) cliff-edge)
+      (loosen! node)
 
-    ;; DFS across subtree to find loose nodes
-    (children-for-each
-      (lambda (child) (if (not (loose? child)) (drop child)))
-      tree
-      node)
-    (friendlies-for-each
-      (lambda (friendly)
-        (if (not (loose? friendly)) (anchor! friendly)))
-      tree
-      node))
+      ;; DFS across subtree to find loose nodes
+      (children-for-each
+        (lambda (child) (if (not (loose? child)) (drop child)))
+        tree
+        node)
+      (friendlies-for-each
+        (lambda (friendly)
+          (if (not (loose? friendly)) (anchor! friendly)))
+        tree
+        node)))
 
   (define (catch node)
     (neighbors-for-each
