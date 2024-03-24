@@ -2210,6 +2210,14 @@
 
 (define (bbs-type-specialize* bbs)
 
+  (define-macro (reachability-debug lbl . rest)
+    #f)
+  (define reachability-debug-lbl 1)
+  (define (reachability-debug* lbl . rest)
+    (let ((result (and reachability-debug-lbl (= lbl reachability-debug-lbl))))
+      (if result (pp (append rest (list lbl))))
+      result))
+
 ;;  (define column-sep "\x23b9;") ;; for display of history of versions
   (define column-sep ":") ;; for display of history of versions
 
@@ -2502,14 +2510,14 @@
                     (bb-versions-active-lbl-get bb-versions version-types))))
         (if version-is-live?
             (begin
-              ;(if (= most-recent-version 2) (pp (list 'reaching 'live 2)))
+              (reachability-debug most-recent-version 'reaching 'live)
               (if from-lbl (add-edge! BFSTree from-lbl most-recent-version onrevive))
               most-recent-version)
             (let* ((new-lbl (or most-recent-version (new-lbl! lbl))))
               (bb-versions-active-lbl-add! bb-versions version-types new-lbl)
               (track-version-history lbl (list 'add from-lbl)) ;; track history of versions
               (queue-put! work-queue (make-queue-task bb new-lbl))
-              ;(if (= new-lbl 2) (pp (list 'reaching 'anew 2)))
+              (reachability-debug new-lbl 'reaching 'anew)
               (if from-lbl (add-edge! BFSTree from-lbl new-lbl onrevive))
               new-lbl))))
 
@@ -3083,8 +3091,8 @@
           (let* ((orig-lbl (orig-lbl-mapping-ref lbl))
                   (bb (lbl-num->bb orig-lbl bbs))
                   (bb-versions (get-bb-versions-from-lbl orig-lbl)))
-            ;(pp (list 'onrevive lbl))
-            ;(if (= lbl 2) (pp (list 'revive 2)))
+            ;(pp (list 'onrevive lbl)) 
+            (reachability-debug lbl 'revive)
             (bb-versions-active-lbl-add!
               bb-versions
               (get-version-types lbl)
@@ -3094,8 +3102,8 @@
     (define (onkill lbl)
       (let* ((orig-lbl (orig-lbl-mapping-ref lbl))
               (bb-versions (get-bb-versions-from-lbl orig-lbl)))
-        ;(pp (list 'onkill lbl))
-        ;(if (= lbl 2) (pp (list 'kill 2)))
+        ;(pp (list 'onkill lbl)) 
+        (reachability-debug lbl 'kill)
         (bb-versions-active-lbl-remove-unreachable! bb-versions)))
 
     (define (merge bb)
@@ -3125,7 +3133,8 @@
             (let ((types (car types-lbl))
                   (lbl (cdr types-lbl)))
               (table-set! lbl-mapping lbl new-lbl)
-              ;(if (or (= lbl 2) (= new-lbl 2)) (pp (list 'replacing lbl 'by new-lbl)))
+              (reachability-debug lbl 'merge new-lbl '<-)
+              (reachability-debug new-lbl 'merge lbl '->)
               (if (not (eq? lbl new-lbl))
                   (replace!
                     BFSTree lbl new-lbl
@@ -3133,7 +3142,7 @@
                     onkill))))
           versions-to-merge)
 
-        ;(if (= new-lbl 2) (pp (list 'merged 'created new-lbl 'reachable: (reachable? new-lbl))))
+        (reachability-debug new-lbl 'merged 'created)
 
         (for-each
           (lambda (type-lbl) (bb-versions-active-lbl-remove! bb-versions (car type-lbl)))
@@ -3164,7 +3173,7 @@
                 (version-lbl (queue-task-version-lbl task))
                 (types (get-version-types version-lbl)))
 
-          ;(if (= version-lbl 2) (pp (list 'dequeued 2 'rechable: (reachable? version-lbl))))
+          (reachability-debug version-lbl 'dequeued)
 
           (when (reachable? version-lbl)
             (if (need-merge? bb) (merge bb))
@@ -3172,8 +3181,8 @@
           
           (if (not (queue-empty? work-queue)) (loop))))
 
-      ;(pp (list 2 'is-reachable (reachable? 2)))
-      ;(pp (list 2 'is-pending (not (not (new-lbl? 2 new-bbs)))))
+      (bbs-entry-lbl-num-set! new-bbs (replacement-lbl-num (bbs-entry-lbl-num bbs)))
+
       (bbs-cleanup)))
 
   (define (finalize)
