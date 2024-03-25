@@ -147,6 +147,7 @@
 (define (source? graph x)
   (= (graph-source graph) x))
 (define (parent? graph x p)
+  ;; use eq? to treat case where x's parent is #f
   (eq? p (get-parent graph x)))
 (define (friend? graph x f)
   (let ((friends (table-ref (graph-friends graph) x #f)))
@@ -273,18 +274,50 @@
     (if ondisconnect (set-for-each ondisconnect disconnected))))
 
 (define (redirect! graph node other #!key onconnect ondisconnect)
+  (define (find-min-by-rank nodes)
+    (let loop ((best (car nodes))
+               (rank (get-rank graph (car nodes)))
+               (nodes (cdr nodes)))
+      (if (null? nodes)
+          best
+          (let* ((next (car nodes))
+                  (next-rank (get-rank graph next)))
+            (if (< next-rank rank)
+                (loop next next-rank (cdr nodes))
+                (loop best rank (cdr nodes)))))))
+
   ;; remove all incoming edges to node and redirect them toward other
   ;; if there is an edge from node to node itself, it is not redirected
-  (let ((parent (get-parent graph node))
-        (friendlies (friendlies->list graph node))) ;; ensure not to iterate and mutate friendlies simultaneously
-    ;; cannot change rank since parent was equal or higher rank
-    (for-each (lambda (f) (when (not (= f node)) (remove-friend! graph f node))) friendlies)
-    ;; cut last edge holding the node, changes rank if connected
-    (if parent (remove-parent-edge! graph node ondisconnect: ondisconnect)) 
-    ;; may change rank
-    (if parent (add-edge! graph parent other onconnect: onconnect))
-    ;; cannot change rank since parent was equal or higher rank
-    (for-each (lambda (f) (when (not (= f node)) (add-friend! graph f other))) friendlies)))
+  ;; this procedure chooses the order in which to add and remove edges
+  ;; to minimize the work to maintain ranks
+  (when (not (= node other)) ;; do nothing for self redirect
+    (let ((parent (get-parent graph node))
+          (friendlies
+            (filter
+              (lambda (f) (not (= f node)))
+              (friendlies->list graph node))))
+      (cond
+        ((and (not parent) (null? friendlies)) #f) ;; case 0: nothing to redirect
+        ((>= (get-rank graph node) (get-rank graph other)) ;; case 1: other's rank will not change
+          ;; removing friendlies never changes rank
+          (for-each (lambda (f) (remove-friend! graph f node)) friendlies)
+          ;; check parent in case node was entirely disconnected
+          (when parent
+            (remove-parent-edge! graph node ondisconnect: ondisconnect)
+            (if (not (parent? graph other parent))
+                (add-friend! graph parent other)))
+          ;; all edges can be redirected to other without possibility of affecting rank
+          (for-each (lambda (f) (add-friend! graph f other)) friendlies))
+        (else ;; case 2: other's rank may decrease 
+          ;; order matters, by adding the the lowest ranked edge first
+          ;; we ensure only the first edge updates the rank
+          (let ((adopter (or parent (find-min-by-rank friendlies))))
+            ;; removing friendlies never changes rank
+            (for-each (lambda (f) (remove-friend! graph f node)) friendlies)
+            (if parent (remove-parent-edge! graph node ondisconnect: ondisconnect))
+            (add-edge! graph adopter other onconnect: onconnect)
+            ;; next edges cannot udpate rank
+            (for-each (lambda (f) (when (not (= f adopter)) (add-friend! graph f other))) friendlies)))))))
 
 (define (connected? graph node)
   (not (= (get-rank graph node) infinity)))
@@ -399,6 +432,22 @@
         instructions)
       (map (lambda (node) ((param-rank) graph node)) (iota graph-size)))
 
+    (define (find-minimal-example init-instructions)
+      (let loop ((instructions init-instructions)
+                 (minimal init-instructions))
+        (if (null? instructions)
+          (if (equal? minimal init-instructions)
+            (begin
+              (pp (list 'MINIMAL-EXAMPLE:))
+              (for-each pp (map instruction-repr minimal)))
+            (find-minimal-example minimal))
+          (let ((without (filter (lambda (i) (not (eq? i (car instructions)))) minimal)))
+            (if (equal?
+                  (run interpret-instructions without)
+                  (get-expected-result interpret-instructions without))
+              (loop (cdr instructions) minimal)
+              (loop (cdr instructions) without))))))
+
     (let* ((nb-instructions (* graph-size (+ 1 (random-integer graph-size))))
            (instructions (make-random-instructions nb-instructions))
            (expected-result (get-expected-result interpret-instructions instructions))
@@ -410,8 +459,9 @@
             (pp result)
             (pp 'EXPECTED:)
             (pp expected-result)
-            (pp 'INSTRUCTIONS:)
-            (for-each pp (map instruction-repr instructions))
+            ;(pp 'INSTRUCTIONS:)
+            ;(for-each pp (map instruction-repr instructions))
+            (find-minimal-example instructions)
             #f))))
 
   (define (fuzzy-test size repetitions)
@@ -596,6 +646,30 @@
     ((param-redirect!) graph 5 0)
     (map (lambda (n) ((param-rank) graph n)) (iota 6)))
 
+  (define (test15)
+    (define graph ((param-make) 0))
+    ((param-add!) graph 0 1)
+    ((param-add!) graph 1 2)
+    ((param-redirect!) graph 2 0)
+    ((param-redirect!) graph 0 3)
+    (map (lambda (n) ((param-rank) graph n)) (iota 4)))
+
+  (define (test16)
+    (define graph ((param-make) 0))
+    ((param-add!) graph 0 1)
+    ((param-add!) graph 1 2)
+    ((param-redirect!) graph 2 2)
+    (map (lambda (n) ((param-rank) graph n)) (iota 3)))
+
+  (define (test17)
+    (define graph ((param-make) 0))
+    ((param-add!) graph 0 1)
+    ((param-redirect!) graph 1 2)
+    ((param-add!) graph 0 3)
+    ((param-redirect!) graph 3 2)
+    ((param-delete!) graph 0 2)
+    (map (lambda (n) ((param-rank) graph n)) (iota 4)))
+
   (define (run-all . tests)
     (for-each
       (lambda (test-data)
@@ -629,6 +703,9 @@
       (list-test test11)
       (list-test test12)
       (list-test test13)
-      (list-test test14))))
+      (list-test test14)
+      (list-test test15)
+      (list-test test16)
+      (list-test test17))))
 
 (test)
