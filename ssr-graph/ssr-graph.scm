@@ -1,4 +1,7 @@
-(define infinity +inf.0)
+;; infinity is used for nodes rank. Using an absurdly hige value
+;; instead of a float allows to stick to fixnum arithmetic while
+;; remaining valid for any practical usecase
+(define infinity (expt 2 60))
 
 (define (make-queue) (cons '() '()))
 (define (queue-empty? queue) (null? (car queue)))
@@ -33,7 +36,7 @@
           (table-set! table x default)
           default))))
 
-(define (make-graph source)
+(define (make-graph #!optional (source 0))
   (vector
     source                                  ;; source
     (list->table (list (cons source 0)))    ;; ranks table
@@ -88,8 +91,10 @@
   (set-add! (table-ref-or-set-default! (graph-friends graph) node) friend)
   (set-add! (table-ref-or-set-default! (graph-friendlies graph) friend) node))
 (define (remove-friend! graph node friend)
-  (set-remove! (table-ref-or-set-default! (graph-friends graph) node) friend)
-  (set-remove! (table-ref-or-set-default! (graph-friendlies graph) friend) node))
+  (let ((friends (table-ref (graph-friends graph) node #f))
+        (friendlies (table-ref (graph-friendlies graph) node #f)))
+    (if friends (set-remove! friends friend))
+    (if friendlies (set-remove! friendlies node))))
 (define (get-parent graph x)
   (table-ref (graph-parents graph) x #f))
 (define (set-parent! graph child parent)
@@ -121,28 +126,31 @@
   (or (parent? graph to from) (friend? graph from to)))
 
 (define (children-for-each f graph x)
-  (set-for-each f (table-ref-or-set-default! (graph-children graph) x)))
+  (let ((children (table-ref (graph-children graph) x #f)))
+    (if children (set-for-each f children))))
 (define (friends-for-each f graph x)
-  (set-for-each f (table-ref-or-set-default! (graph-friends graph) x)))
+  (let ((friends (table-ref (graph-friends graph) x #f)))
+    (if friends (set-for-each f friends))))
 (define (neighbors-for-each f graph x)
   (friends-for-each f graph x)
   (children-for-each f graph x))
 (define (friendlies-for-each f graph x)
-  (set-for-each f (table-ref-or-set-default! (graph-friendlies graph) x)))
+  (let ((friendlies (table-ref (graph-friendlies graph) x #f)))
+    (if friendlies (set-for-each f friendlies))))
 (define (friendlies-search f graph x)
-  (set-search f (table-ref-or-set-default! (graph-friendlies graph) x)))
+  (let ((friendlies (table-ref (graph-friendlies graph) x #f)))
+    (if friendlies (set-search f friendlies) #f)))
 (define (friendlies->list graph x)
   (let ((friendlies (table-ref (graph-friendlies graph) x #f)))
-    (if friendlies
-        (set->list friendlies)
-        '())))
+    (if friendlies (set->list friendlies) '())))
     
 (define (source? graph x)
   (= (graph-source graph) x))
 (define (parent? graph x p)
   (eq? p (get-parent graph x)))
 (define (friend? graph x f)
-  (set-contains? (table-ref-or-set-default! (graph-friends graph) x) f))
+  (let ((friends (table-ref (graph-friends graph) x #f)))
+    (if friends (set-contains? friends f) #f)))
 
 (define (add-edge! graph from to #!key onconnect)
   (define queue (make-queue))
