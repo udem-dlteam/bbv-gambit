@@ -1,7 +1,7 @@
 ;; infinity is used for nodes rank. Using an absurdly hige value
 ;; instead of a float allows to stick to fixnum arithmetic while
 ;; remaining valid for any practical usecase
-(define infinity (expt 2 60))
+(define infinity +inf.0)
 
 (define (make-queue) (cons '() '()))
 (define (queue-empty? queue) (null? (car queue)))
@@ -92,7 +92,7 @@
   (set-add! (table-ref-or-set-default! (graph-friendlies graph) friend) node))
 (define (remove-friend! graph node friend)
   (let ((friends (table-ref (graph-friends graph) node #f))
-        (friendlies (table-ref (graph-friendlies graph) node #f)))
+        (friendlies (table-ref (graph-friendlies graph) friend #f)))
     (if friends (set-remove! friends friend))
     (if friendlies (set-remove! friendlies node))))
 (define (get-parent graph x)
@@ -325,9 +325,9 @@
         (if (queue-empty? queue)
           infinity
           (let* ((rank-node (queue-get! queue))
-                (rank (car rank-node))
-                (node (cdr rank-node))
-                (children (table-ref graph node '())))
+                 (rank (car rank-node))
+                 (node (cdr rank-node))
+                 (children (table-ref graph node '())))
             (if (= node target)
                 rank
                 (begin
@@ -361,11 +361,6 @@
                    (param-rank get-rank))
       (apply test args)))
 
-  (define (interpret-test instructions N)
-    (define graph ((param-make) 0))
-    (for-each (lambda (instr) ((eval instr) graph)) instructions)
-    (map (lambda (n) ((param-rank) graph n)) (iota N)))
-
   (define (run-one-fuzzy-test graph-size)
     (define delete-density 0.1)
     (define redirect-density 0.05)
@@ -398,7 +393,7 @@
         (cons (make-random-instruction) (make-random-instructions (- n 1)))))
 
     (define (interpret-instructions instructions)
-      (define graph ((param-make) graph-size))
+      (define graph ((param-make) 0))
       (for-each
         (lambda (instr) (instruction-exec instr graph))
         instructions)
