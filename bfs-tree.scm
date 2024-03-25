@@ -144,12 +144,13 @@
 (define (friend? tree x f)
   (set-contains? (table-ref-or-set-default! (BFSTree-friends tree) x) f))
 
-(define (add-edge! tree from to)
+(define (add-edge! tree from to #!key onconnect)
   (define queue (make-queue))
 
   (define (hoist hoister node)
     (when (dirty-edge? tree hoister node)
       (set-parent! tree node hoister)
+      (if (and onconnect (= (get-rank tree node) infinity)) (onconnect node))
       (update-rank! tree node)
       (neighbors-for-each
         (lambda (n)
@@ -164,18 +165,19 @@
     (do () ((queue-empty? queue))
       (hoist (queue-get! queue) (queue-get! queue)))))
 
-(define (remove-edge! tree from to)
+(define (remove-edge! tree from to #!key ondisconnect)
   (cond
     ((not (parent? tree to from)) ;; edge not in BFS, can be removed safely
       (remove-friend! tree from to))
     (else
-      (remove-parent-edge! tree to))))
+      (remove-parent-edge! tree to ondisconnect: ondisconnect))))
 
-(define (remove-parent-edge! tree to)
+(define (remove-parent-edge! tree to #!key ondisconnect)
   (define loose-queue (make-queue))
   (define catch-queue (make-queue))
   (define loose-set (make-set))
   (define anchor-table (make-table))
+  (define disconnected (make-set))
 
   (define (loosen! node)
     (let* ((rank (get-rank tree node))
@@ -183,6 +185,7 @@
       (when bucket
         (set-remove! bucket node)
         (if (set-empty? bucket) (table-set! anchor-table rank)))
+      (set-add! disconnected node)
       (set-rank! tree node infinity)))
   (define (loose? node) (= (get-rank tree node) infinity))
 
@@ -237,6 +240,7 @@
       (lambda (neighbor)
         (when (loose? neighbor)
           (set-parent! tree neighbor node)
+          (set-remove! disconnected neighbor)
           (update-rank! tree neighbor)
           (queue-put! catch-queue neighbor)))
       tree
@@ -257,9 +261,10 @@
       buckets)
     ;; all buckets caught, catch rest of the queue
     (do () ((queue-empty? catch-queue))
-      (catch (queue-get! catch-queue)))))
+      (catch (queue-get! catch-queue)))
+    (if ondisconnect (set-for-each ondisconnect disconnected))))
 
-(define (redirect! tree node other)
+(define (redirect! tree node other #!key onconnect ondisconnect)
   ;; remove all incoming edges to node and redirect them toward other
   ;; if there is an edge from node to node itself, it is not redirected
   (let ((parent (get-parent tree node))
@@ -267,9 +272,9 @@
     ;; cannot change rank since parent was equal or higher rank
     (for-each (lambda (f) (when (not (= f node)) (remove-friend! tree f node))) friendlies)
     ;; cut last edge holding the node, changes rank if connected
-    (if parent (remove-parent-edge! tree node)) 
+    (if parent (remove-parent-edge! tree node ondisconnect: ondisconnect)) 
     ;; may change rank
-    (if parent (add-edge! tree parent other))
+    (if parent (add-edge! tree parent other onconnect: onconnect))
     ;; cannot change rank since parent was equal or higher rank
     (for-each (lambda (f) (when (not (= f node)) (add-friend! tree f other))) friendlies)))
 
