@@ -2927,6 +2927,10 @@
 ;;               (pprint '****jump)
               (let* ((opnd
                       (jump-opnd gvm-instr))
+                    (opnd-type-before (and (locenv-loc? opnd) (opnd-type opnd opnd types-before)))
+                    (opnd-singleton (and (type-singleton? opnd-type-before) (type-singleton-val opnd-type-before)))
+                    (opnd-is-proc? (and opnd-singleton (proc-obj? opnd-singleton)))
+                    (opnd-is-primitive? (and opnd-is-proc? (proc-obj-primitive? opnd-singleton)))
                     (ret
                       (jump-ret gvm-instr))
                     (types-return
@@ -2935,7 +2939,8 @@
                                   (gvm-loc->locenv-index types-after (make-reg 1)))
                                   (types-at-ret
                                   (if (and (jump-safe? gvm-instr)
-                                            (locenv-loc? opnd))
+                                            (locenv-loc? opnd)
+                                            (not opnd-is-proc?))
                                       (locenv-set types-after
                                                   (gvm-loc->locenv-index types-after opnd)
                                                   type-procedure)
@@ -2993,7 +2998,7 @@
                                               (opnd-type opnd new-opnd types-before))
                             type-procedure)
                           #f
-                          (jump-safe? gvm-instr))
+                          (and (jump-safe? gvm-instr) (not opnd-is-primitive?)))
                       (gvm-instr-frame gvm-instr)
                       (gvm-instr-comment gvm-instr))))
                 (gvm-instr-types-set! new-instr types-after)
