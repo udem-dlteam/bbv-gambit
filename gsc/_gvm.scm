@@ -2998,7 +2998,7 @@
                                               (opnd-type opnd new-opnd types-before))
                             type-procedure)
                           #f
-                          (and (jump-safe? gvm-instr) (not opnd-is-primitive?)))
+                          (jump-safe? gvm-instr))
                       (gvm-instr-frame gvm-instr)
                       (gvm-instr-comment gvm-instr))))
                 (gvm-instr-types-set! new-instr types-after)
@@ -6010,8 +6010,12 @@
         (InterpreterState-execute-close state instr)
         (assert-types state instr))
       ((ifjump)
+        (InterpreterState-primitive-counter-increment state "#gvm:ifjump")
         (InterpreterState-execute-ifjump state instr))
       ((jump)
+        (InterpreterState-primitive-counter-increment
+          state
+          (if (jump-safe? instr) "#gvm:jump/safe" "#gvm:jump"))
         (InterpreterState-execute-jump state instr))
       (else
         (InterpreterState-raise-error state "unknown instruction" (gvm-instr-kind instr)))))
