@@ -2941,9 +2941,12 @@
                                   (if (and (jump-safe? gvm-instr)
                                             (locenv-loc? opnd)
                                             (not opnd-is-proc?))
-                                      (locenv-set types-after
-                                                  (gvm-loc->locenv-index types-after opnd)
-                                                  type-procedure)
+                                      ;; TODO: instead of repeating a resize, there should be a way
+                                      ;; to check if opnd is still live in types-after
+                                      (resized-frame-types (gvm-instr-frame gvm-instr)
+                                        (locenv-set types-before
+                                                  (gvm-loc->locenv-index types-before opnd)
+                                                  type-procedure))
                                       types-after)))
                             (locenv-set types-at-ret
                                         result-loc

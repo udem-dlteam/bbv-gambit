@@ -8008,6 +8008,7 @@
 ;;; conversion to motley type representation
 
 (define (make-type-motley-from-exact-integer tctx obj)
+  (declare (generic))
   (let ((min-fixnum (tctx-smallest-min-fixnum tctx))
         (max-fixnum (tctx-smallest-max-fixnum tctx)))
     (cond ((and (>= obj min-fixnum)
