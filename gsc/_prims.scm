@@ -8630,6 +8630,8 @@
                 (bitwise-not (type-motley-mut-bitset type2)))
    (bitwise-and (type-motley-not-mut-bitset type1)
                 (bitwise-not (type-motley-not-mut-bitset type2)))
+   (type-motley-length-range type1) ;; HACK: keep same length range
+   #;
    (difference-fixnum-range (type-motley-length-range type1) ;; TODO: this is only correct when a single type is left in bitset
                             (type-motley-length-range type2))
    (difference-fixnum-range (type-motley-fixnum-range type1)
