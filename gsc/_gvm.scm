@@ -2373,7 +2373,7 @@
                   (op (car operation))
                   (from-lbl (cadr operation)))
 
-            (if (memq op '(add merge))
+            (if (and (pair? types-lbl-alist) (memq op '(add merge)))
                 (let* ((newest-types-lbl (last types-lbl-alist))
                         (types (car newest-types-lbl))
                         (new-lbl (cdr newest-types-lbl)))
