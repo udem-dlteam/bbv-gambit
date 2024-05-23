@@ -5839,7 +5839,8 @@
       (pprint '***GVM-Interpreter)
       (let ((state (init-interpreter-state gvm-interpret-ctx)))
         (InterpreterState-execution-loop state)
-        (InterpreterState-primitive-counter-trace state)))))
+        (InterpreterState-primitive-counter-trace state)
+        (InterpreterState-bb-execution-count-trace state gvm-interpret-ctx)))))
 
 (define (InterpreterState-execution-loop state)
   (let loop ()
@@ -5870,6 +5871,7 @@
   assert-types?
   (primitive-counter unprintable:)
   (bbs-names unprintable:)
+  (bb-execution-count unprintable:)
   ctx)
 
 (define (InterpreterState-stack state) (RTE-stack (InterpreterState-rte state)))
@@ -5910,6 +5912,7 @@
             #f                                       ;; assert-types?
             (make-table)                             ;; primitive counter
             (make-table test: eq? weak-keys: #t)     ;; bbs-names
+            (make-table test: eq?)                   ;; bb-execution-count
             gvm-interpret-ctx))                      ;; ctx
          (rte (InterpreterState-rte state)))
     ;; connect RTE to the state
@@ -5924,6 +5927,8 @@
     (add-global-primitive rte '##gvm-interpreter-debug)
     (add-global-primitive rte '##fixnum->string)
     (add-global-primitive rte 'command-line)
+
+    (InterpreterState-increment-bb-execution-count! state)
   
     state))
 
@@ -5967,11 +5972,180 @@
     (display-error "\n")
     (error 1)))
 
+(define (InterpreterState-increment-bb-execution-count! state)
+  (define bbs (InterpreterState-bbs state))
+  (define bb (InterpreterState-bb state))
+  (define bb-execution-count (InterpreterState-bb-execution-count state))
+  (define bbs-count
+    (begin
+      (if (not (table-ref bb-execution-count bbs #f))
+        (table-set! bb-execution-count bbs (make-table test: eq?)))
+      (table-ref bb-execution-count bbs)))
+
+  (table-set! bbs-count bb (+ (table-ref bbs-count bb 0) 1)))
+
+(define (InterpreterState-get-bb-execution-count state bbs bb)
+  (define bb-execution-count (InterpreterState-bb-execution-count state))
+  (define bbs-count (table-ref bb-execution-count bbs #f))
+  (if (not bbs-count) 0 (table-ref bbs-count bb 0)))
+
 (define (InterpreterState-instr-index-increment! state last-instr)
   ;; increment index if instruction is not a jump
   ;; jump instruction reset index to 0 instead
   (or (memq (gvm-instr-kind last-instr) '(jump ifjump))
       (InterpreterState-instr-index-set! state (+ (InterpreterState-instr-index state) 1))))
+
+(define (InterpreterState-bb-execution-count-trace state gvm-interpret-ctx)
+  ;;(define (with-output-to-file _ f) (f))
+  (define HTML-head "<!DOCTYPE html>
+    <html lang='en'>
+    <head>
+    <meta charset='UTF-8'>
+    <title>SBBV BB Usage</title>
+    <style>
+    table {
+      width: 100%;
+      border-collapse: collapse; /* Ensures that table borders are collapsed into a single border */
+      font-family: Arial, sans-serif; /* Sets a clean, modern font */
+    }
+
+    .data-row td {
+      padding: 12px; /* Adds spacing around content */
+      border-bottom: 1px solid #ddd; /* Light grey border for each row */
+      cursor: pointer; /* Indicates the row is clickable */
+    }
+
+    .data-title {
+      font-size: 24px;
+      color: #333; /* Dark grey color for better readability */
+    }
+
+    .data-description {
+      font-size: 16px;
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.3s ease-in-out; /* Smooth transition for expanding and collapsing */
+      padding: 0 20px; /* Indent description content */
+    }
+
+    .data-row.active .data-description {
+      max-height: 100px; /* Example max height; adjust based on content */
+      padding: 10px 20px; /* Padding when description is visible */
+    }
+
+    /* Styling for an overall cleaner look */
+    table {
+      margin: 20px auto;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.1); /* Subtle shadow for depth */
+      background-color: #fff; /* White background for cleanliness */
+    }
+
+    .data-row:hover {
+      background-color: #f9f9f9; /* Light grey background on hover */
+    }
+    </style>
+    </head>
+    <body>
+    <table>")
+
+  (define HTML-tail "</table>
+    <script>
+      document.addEventListener('DOMContentLoaded', function() {
+        const rows = document.querySelectorAll('.data-row');
+
+        rows.forEach(row => {
+          row.addEventListener('click', function() {
+            row.classList.toggle('active'); // Toggle the 'active' class on the parent <tr>
+          });
+        });
+      });
+    </script>
+    </body>
+    </html>
+    ")
+
+  (define-type bb-data
+    bb
+    (bbs unprintable:)
+    count)
+  (define (bb-data-lbl bd) (bb-label-instr (bb-data-bb bd)))
+  (define (bb-data-lbl-num bd) (bb-lbl-num (bb-data-bb bd)))
+  (define (bb-data-orig-lbl-num bd) (instr-comment-get (bb-data-lbl bd) 'orig-lbl))
+  (define (bb-data-bbs-name bd) (or (InterpreterState-get-bbs-name state (bb-data-bbs bd)) "unknown"))
+  (define (bb-data-ctx bd) (gvm-instr-types (bb-data-lbl bd)))
+  (define (bb-data-readable-ctx bd)
+    (format-concatenate (format-gvm-instr-frame (bb-data-lbl bd) '())))
+  (define (bb-data-source bd)
+    (node-source (instr-comment-get (bb-data-lbl bd) 'node)))
+  (define (bb-data-filename bd)
+    (define loc (source-locat (bb-data-source bd)))
+    (if (and loc (string? (vector-ref loc 0)))
+        (vector-ref loc 0)
+        "<no filename>"))
+  (define (bb-data-lineno bd)
+    (define loc (source-locat (bb-data-source bd)))
+    (if (and loc (string? (vector-ref loc 0)))
+        (+ (**filepos-line (vector-ref loc 1)) 1)
+        -1))
+  (define (to-string s) (if (string? s) s (object->string s)))
+  (define (bb-data-row bd)
+    (define (tag name . rest)
+      (define attrs "")
+      (define content "")
+
+      ;; parse
+      (let loop ((rest rest))
+        (when (pair? rest)
+          (if (keyword? (car rest))
+            (begin
+              (set!
+                attrs
+                (string-append
+                  attrs
+                  " "
+                  (keyword->string (car rest)) "=\"" (to-string (cadr rest)) "\""))
+              (loop (cddr rest)))
+            (begin
+              (set! content (string-append content " " (to-string (car rest))))
+              (loop (cdr rest))))))
+
+      (string-append "<" name " " attrs ">" content "</" name ">"))
+
+    (tag "tr" class: 'data-row
+      (tag "td"
+        (tag "div" class: 'data-title
+          (tag "div" (tag "strong" "label:") (string-append (bb-data-bbs-name bd) "@" (to-string (bb-data-lbl-num bd))))
+          (tag "div" (tag "strong" "origin:") (string-append (bb-data-bbs-name bd) "@" (to-string (bb-data-orig-lbl-num bd))))
+          (tag "div" (tag "strong" "context:") (tag "code" (bb-data-readable-ctx bd))))
+        (tag "div" class: 'data-description
+          (tag "div" (tag "strong" "location:") (string-append (bb-data-filename bd) "@L" (to-string (bb-data-lineno bd))))
+          (tag "div" (tag "strong" "source:") (tag "code" (source->expression (bb-data-source bd))))
+          (tag "p" "executed" (bb-data-count bd) "times")))))
+
+  (define module-procs (vector-ref gvm-interpret-ctx 0))
+  (define all-bb '())
+  (define (push bb-data) (set! all-bb (cons bb-data all-bb)))
+  (define (sort-all-bb)
+    (define (compare bb-data1 bb-data2) (> (bb-data-count bb-data1) (bb-data-count bb-data2)))
+    (set! all-bb (list-sort compare all-bb)))
+
+  (define (take bbs bb)
+    (push (make-bb-data bb bbs (InterpreterState-get-bb-execution-count state bbs bb))))
+
+  (for-each
+    (lambda (proc)
+      (let ((bbs (proc-obj-code proc)))
+        (bbs-for-each-bb (lambda (bb) (take bbs bb)) bbs)))
+    module-procs)
+
+  (sort-all-bb)
+
+  (with-output-to-file
+    "test.html"
+    (lambda ()
+      (println HTML-head)
+      (for-each (lambda (bd) (println (bb-data-row bd))) all-bb)
+      (println HTML-tail))))
 
 (define (InterpreterState-register-bbs-name! state proc)
   (table-set! (InterpreterState-bbs-names state) (proc-obj-code proc) (proc-obj-name proc)))
@@ -6282,6 +6456,7 @@
     (if ret (RTE-set! rte backend-return-label-location ret))
     (InterpreterState-bbs-set! state bbs)
     (InterpreterState-bb-set! state bb)
+    (InterpreterState-increment-bb-execution-count! state)
     (InterpreterState-instr-index-set! state 0)))
 
 (define (InterpreterState-execute-ifjump state instr)
@@ -6326,7 +6501,7 @@
               (list "<<" t)
               (map (lambda (n) (string-append " " (obj->string-safe n))) names)
               '(">>"))))
-    (apply string-append elements)))
+    (string-concatenate elements)))
 
   (string->short-string
     (cond
