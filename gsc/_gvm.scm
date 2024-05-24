@@ -960,7 +960,11 @@
                           (make-label-simple
                            lbl2
                            (gvm-instr-frame last-jump/ret)
-                           (gvm-instr-comment last-jump/ret)))
+                           (gvm-instr-comment
+                              (bb-label-instr
+                                (stretchable-vector-ref
+                                  (bbs-basic-blocks bbs)
+                                  (lbl-num (jump-opnd last-jump/ret)))))))
                          new-bbs)))
                   (bb-branch-instr-set!
                    new-bb
@@ -6102,11 +6106,10 @@
                 attrs
                 (string-append
                   attrs
-                  " "
-                  (keyword->string (car rest)) "=\"" (to-string (cadr rest)) "\""))
+                  (keyword->string (car rest)) "=\"" (to-string (cadr rest)) "\" "))
               (loop (cddr rest)))
             (begin
-              (set! content (string-append content " " (to-string (car rest))))
+              (set! content (string-append content (to-string (car rest)) " "))
               (loop (cdr rest))))))
 
       (string-append "<" name " " attrs ">" content "</" name ">"))
@@ -6115,7 +6118,7 @@
       (tag "td"
         (tag "div" class: 'data-title
           (tag "div" (tag "strong" "label:") (string-append (bb-data-bbs-name bd) "@" (to-string (bb-data-lbl-num bd))))
-          (tag "div" (tag "strong" "origin:") (string-append (bb-data-bbs-name bd) "@" (to-string (bb-data-orig-lbl-num bd))))
+          (tag "div" (tag "strong" "origin:") (string-append (bb-data-bbs-name bd) "@" (number->string (bb-data-orig-lbl-num bd))))
           (tag "div" (tag "strong" "context:") (tag "code" (bb-data-readable-ctx bd))))
         (tag "div" class: 'data-description
           (tag "div" (tag "strong" "location:") (string-append (bb-data-filename bd) "@L" (to-string (bb-data-lineno bd))))
