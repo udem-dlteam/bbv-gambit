@@ -6007,147 +6007,215 @@
     <meta charset='UTF-8'>
     <title>SBBV BB Usage</title>
     <style>
-    table {
-      width: 100%;
-      border-collapse: collapse; /* Ensures that table borders are collapsed into a single border */
-      font-family: Arial, sans-serif; /* Sets a clean, modern font */
-    }
+      .card {
+          margin: 10px;
+          border: 1px solid #ddd;
+          box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+      }
 
-    .data-row td {
-      padding: 12px; /* Adds spacing around content */
-      border-bottom: 1px solid #ddd; /* Light grey border for each row */
-      cursor: pointer; /* Indicates the row is clickable */
-    }
+      .card-content {
+          cursor: pointer;
+      }
 
-    .data-title {
-      font-size: 24px;
-      color: #333; /* Dark grey color for better readability */
-    }
+      .card-header {
+          display: flex; /* Enables flexbox layout */
+          padding: 10px 20px;
+          background-color: #f7f7f7;
+          font-weight: bold;
+          border-bottom: 1px solid #ddd;
+      }
 
-    .data-description {
-      font-size: 16px;
-      max-height: 0;
-      overflow: hidden;
-      transition: max-height 0.3s ease-in-out; /* Smooth transition for expanding and collapsing */
-      padding: 0 20px; /* Indent description content */
-    }
+      .card-title {
+          width: 200px; /* Fixed width for the first part */
+      }
 
-    .data-row.active .data-description {
-      max-height: 100px; /* Example max height; adjust based on content */
-      padding: 10px 20px; /* Padding when description is visible */
-    }
+      .card-subtitles {
+          padding-left: 40px;
+          border-left: 1px solid #999;
+          flex-grow: 1;
+          display: grid;
+          grid-template-columns: repeat(10, 1fr); /* Creates three columns, even if some are empty */
+          gap: 10px;
+      }
 
-    /* Styling for an overall cleaner look */
-    table {
-      margin: 20px auto;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.1); /* Subtle shadow for depth */
-      background-color: #fff; /* White background for cleanliness */
-    }
+      .card-subtitle {
+          /* Additional styling for subtitles if needed */
+      }
 
-    .data-row:hover {
-      background-color: #f9f9f9; /* Light grey background on hover */
-    }
+      .card-body {
+          padding: 20px;
+          display: none;
+          background-color: white;
+      }
+
+      .card-body > * { /* This selector targets all direct children of .card-body */
+          display: block; /* Makes every child a block-level element, forcing new lines */
+          margin-bottom: 10px; /* Adds space between lines */
+      }
+
+      .card-body-row {
+        
+      }
+
+      code {
+        font-size: 1.5em;
+      }
+
+      .card-header:hover {
+          background-color: #e9e9e9;
+      }
     </style>
     </head>
-    <body>
-    <table>")
+    <body>")
 
-  (define HTML-tail "</table>
+  (define HTML-tail "
     <script>
-      document.addEventListener('DOMContentLoaded', function() {
-        const rows = document.querySelectorAll('.data-row');
+      document.addEventListener('DOMContentLoaded', () => {
+          const cards = document.querySelectorAll('.card-content');
 
-        rows.forEach(row => {
-          row.addEventListener('click', function() {
-            row.classList.toggle('active'); // Toggle the 'active' class on the parent <tr>
+          cards.forEach(card => {
+              card.addEventListener('click', function() {
+                  const body = this.querySelector('.card-body');
+                  body.style.display = body.style.display === 'block' ? 'none' : 'block'; // Toggle visibility
+              });
           });
-        });
       });
     </script>
     </body>
     </html>
     ")
 
-  (define-type bb-data
-    bb
-    (bbs unprintable:)
-    count)
-  (define (bb-data-lbl bd) (bb-label-instr (bb-data-bb bd)))
-  (define (bb-data-lbl-num bd) (bb-lbl-num (bb-data-bb bd)))
-  (define (bb-data-orig-lbl-num bd) (instr-comment-get (bb-data-lbl bd) 'orig-lbl))
-  (define (bb-data-bbs-name bd) (or (InterpreterState-get-bbs-name state (bb-data-bbs bd)) "unknown"))
-  (define (bb-data-ctx bd) (gvm-instr-types (bb-data-lbl bd)))
-  (define (bb-data-readable-ctx bd)
-    (format-concatenate (format-gvm-instr-frame (bb-data-lbl bd) '())))
-  (define (bb-data-source bd)
-    (node-source (instr-comment-get (bb-data-lbl bd) 'node)))
-  (define (bb-data-filename bd)
-    (define loc (source-locat (bb-data-source bd)))
-    (if (and loc (string? (vector-ref loc 0)))
-        (vector-ref loc 0)
-        "<no filename>"))
-  (define (bb-data-lineno bd)
-    (define loc (source-locat (bb-data-source bd)))
-    (if (and loc (string? (vector-ref loc 0)))
-        (+ (**filepos-line (vector-ref loc 1)) 1)
-        -1))
-  (define (to-string s) (if (string? s) s (object->string s)))
-  (define (bb-data-row bd)
-    (define (tag name . rest)
-      (define attrs "")
-      (define content "")
+  (define (tag name . rest)
+    (define attrs "")
+    (define content "")
 
-      ;; parse
-      (let loop ((rest rest))
-        (when (pair? rest)
-          (if (keyword? (car rest))
-            (begin
-              (set!
+    ;; parse
+    (let loop ((rest rest) (accept-keywords #t))
+      (if (pair? rest)
+        (cond
+          ((keyword? (car rest))
+            (set!
+              attrs
+              (string-append
                 attrs
-                (string-append
-                  attrs
-                  (keyword->string (car rest)) "=\"" (to-string (cadr rest)) "\" "))
-              (loop (cddr rest)))
-            (begin
-              (set! content (string-append content (to-string (car rest)) " "))
-              (loop (cdr rest))))))
+                (keyword->string (car rest)) "=\"" (to-string (cadr rest)) "\" "))
+            (loop (cddr rest) #t))
+          ((pair? (car rest))
+            (loop (car rest) #f)
+            (loop (cdr rest) #t))
+          (else
+            (set! content (string-append content (to-string (car rest)) " "))
+            (loop (cdr rest) #t)))))
 
-      (string-append "<" name " " attrs ">" content "</" name ">"))
+      (string-append "<" (symbol->string name) " " attrs ">" content "</" (symbol->string name) ">"))
 
-    (tag "tr" class: 'data-row
-      (tag "td"
-        (tag "div" class: 'data-title
-          (tag "div" (tag "strong" "label:") (string-append (bb-data-bbs-name bd) "@" (to-string (bb-data-lbl-num bd))))
-          (tag "div" (tag "strong" "origin:") (string-append (bb-data-bbs-name bd) "@" (number->string (bb-data-orig-lbl-num bd))))
-          (tag "div" (tag "strong" "context:") (tag "code" (bb-data-readable-ctx bd))))
-        (tag "div" class: 'data-description
-          (tag "div" (tag "strong" "location:") (string-append (bb-data-filename bd) "@L" (to-string (bb-data-lineno bd))))
-          (tag "div" (tag "strong" "source:") (tag "code" (source->expression (bb-data-source bd))))
-          (tag "p" "executed" (bb-data-count bd) "times")))))
+  (define-type BBUsage
+    (bbs unprintable:)
+    orig-lbl-num
+    (specialized-blocks unprintable:))
 
-  (define module-procs (vector-ref gvm-interpret-ctx 0))
-  (define all-bb '())
-  (define (push bb-data) (set! all-bb (cons bb-data all-bb)))
-  (define (sort-all-bb)
-    (define (compare bb-data1 bb-data2) (> (bb-data-count bb-data1) (bb-data-count bb-data2)))
-    (set! all-bb (list-sort compare all-bb)))
+  (define usage-map (make-table))
 
-  (define (take bbs bb)
-    (push (make-bb-data bb bbs (InterpreterState-get-bb-execution-count state bbs bb))))
+  (define (table-ref-or-set-default table key thunk)
+    (if (not (table-ref table key #f)) (table-set! table key (thunk)))
+    (table-ref table key))
+
+  (define (add-usage! bbs specialized-block)
+    (define orig-lbl-num (or (instr-comment-get (bb-label-instr specialized-block) 'orig-lbl) (error "no orig-lbl" bb)))
+    (define bbs-usage-map (table-ref-or-set-default usage-map bbs make-table))
+    (define usage
+      (table-ref-or-set-default
+        bbs-usage-map
+        orig-lbl-num
+        (lambda () (make-BBUsage bbs orig-lbl-num '()))))
+
+    (define specialized-blocks (BBUsage-specialized-blocks usage))
+    
+    (if (not (memq specialized-block specialized-blocks))
+      (BBUsage-specialized-blocks-set! usage (cons specialized-block specialized-blocks))))
+
+  (define (bb-usage-count bbs bb)
+    (InterpreterState-get-bb-execution-count state bbs bb))
+
+  (define (BBUsage-usage-count usage)
+    (define bbs (BBUsage-bbs usage))
+    (apply + (map (lambda (bb) (bb-usage-count bbs bb)) (BBUsage-specialized-blocks usage))))
+
+  (define (sorted-bb-usage)
+    (define acc '())
+    (table-for-each
+      (lambda (bbs bbs-usage-map)
+        (table-for-each
+          (lambda (orig-lbl-num usage)
+            (BBUsage-specialized-blocks-set!
+              usage
+              (list-sort
+                (lambda (bb1 bb2) (> (bb-usage-count bbs bb1) (bb-usage-count bbs bb2)))
+                (BBUsage-specialized-blocks usage)))
+            (set! acc (cons usage acc)))
+          bbs-usage-map))
+      usage-map)
+    
+    (list-sort (lambda (u1 u2) (> (BBUsage-usage-count u1) (BBUsage-usage-count u2))) acc))
+
+  (define (BBUsage-orig-bb-id usage)
+    (define bbs (BBUsage-bbs usage))
+    (define orig-lbl-num (BBUsage-orig-lbl-num usage))
+    (string-append (InterpreterState-get-bbs-name state bbs) "@" (number->string orig-lbl-num)))
+
+  (define (BBUsage-some-bb usage)
+    (car (BBUsage-specialized-blocks usage)))
+
+  (define (BBUsage-some-label usage)
+    (bb-label-instr (BBUsage-some-bb usage)))
+
+  (define (BBUsage-source usage)
+    (to-string (source->expression (node-source (instr-comment-get (BBUsage-some-label usage) 'node)))))
+
+  (define (to-string s) (if (string? s) s (object->string s)))
+
+  (define (bb-readable-ctx bb) (format-concatenate (format-gvm-instr-frame (bb-label-instr bb) '())))
+
+  (define (usage-to-html usage)
+    (define ncol (+ max-bb-columns 1))
+    (define bbs (BBUsage-bbs usage))
+    (define specialized-blocks (BBUsage-specialized-blocks usage))
+    (tag 'div class: 'card
+      (tag 'div class: 'card-content
+        (tag 'div class: 'card-header
+          (tag 'span class: 'card-title (BBUsage-orig-bb-id usage))
+          (tag 'span class: 'card-subtitles
+            (map
+              (lambda (bb) (tag 'span class: 'card-subtitle (InterpreterState-get-bb-execution-count state bbs bb)))
+              specialized-blocks)))
+        (tag 'div class: 'card-body
+          (tag 'span class: 'card-body-row (tag 'strong "source:") (tag 'code (BBUsage-source usage)))
+          (map
+            (lambda (bb)
+              (tag 'span class: 'card-body-row
+                (tag 'strong "bb" (bb-lbl-num bb) "(" (InterpreterState-get-bb-execution-count state bbs bb) "):")
+                (tag 'code (bb-readable-ctx bb))))
+            specialized-blocks)))))
+
+  (define (get-max-versions) 
+    (let loop ((m 0) (rest (sorted-bb-usage)))
+      (if (null? rest)
+        m
+        (loop
+          (max m (length (BBUsage-specialized-blocks usage)))
+          (cdr rest)))))
 
   (for-each
-    (lambda (proc)
-      (let ((bbs (proc-obj-code proc)))
-        (bbs-for-each-bb (lambda (bb) (take bbs bb)) bbs)))
-    module-procs)
-
-  (sort-all-bb)
+    (lambda (module-proc)
+      (let ((bbs (proc-obj-code module-proc)))
+        (bbs-for-each-bb (lambda (bb) (add-usage! bbs bb)) bbs)))
+    (vector-ref gvm-interpret-ctx 0))
 
   (with-output-to-file
     "test.html"
     (lambda ()
       (println HTML-head)
-      (for-each (lambda (bd) (println (bb-data-row bd))) all-bb)
+      (for-each (lambda (usage) (println (usage-to-html usage))) (sorted-bb-usage))
       (println HTML-tail))))
 
 (define (InterpreterState-register-bbs-name! state proc)
