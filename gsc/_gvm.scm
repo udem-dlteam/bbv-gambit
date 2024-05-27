@@ -856,7 +856,7 @@
 ;; is always the entry point.
 
 (define (bbs-purify bbs)
-  (define optim? #t)
+  (define optim? #f)
   (define (purify-step bbs0)
     (let* ((bbs1 (bbs-remove-jump-cascades bbs0))
            (bbs2 (bbs-remove-dead-code bbs1))
@@ -6001,222 +6001,69 @@
 
 (define (InterpreterState-bb-execution-count-trace state gvm-interpret-ctx)
   ;;(define (with-output-to-file _ f) (f))
-  (define HTML-head "<!DOCTYPE html>
-    <html lang='en'>
-    <head>
-    <meta charset='UTF-8'>
-    <title>SBBV BB Usage</title>
-    <style>
-      .card {
-          margin: 10px;
-          border: 1px solid #ddd;
-          box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-      }
-
-      .card-content {
-          cursor: pointer;
-      }
-
-      .card-header {
-          display: flex; /* Enables flexbox layout */
-          padding: 10px 20px;
-          background-color: #f7f7f7;
-          font-weight: bold;
-          border-bottom: 1px solid #ddd;
-      }
-
-      .card-title {
-          width: 200px; /* Fixed width for the first part */
-      }
-
-      .card-subtitles {
-          padding-left: 40px;
-          border-left: 1px solid #999;
-          flex-grow: 1;
-          display: grid;
-          grid-template-columns: repeat(10, 1fr); /* Creates three columns, even if some are empty */
-          gap: 10px;
-      }
-
-      .card-subtitle {
-          /* Additional styling for subtitles if needed */
-      }
-
-      .card-body {
-          padding: 20px;
-          display: none;
-          background-color: white;
-      }
-
-      .card-body > * { /* This selector targets all direct children of .card-body */
-          display: block; /* Makes every child a block-level element, forcing new lines */
-          margin-bottom: 10px; /* Adds space between lines */
-      }
-
-      .card-body-row {
-        
-      }
-
-      code {
-        font-size: 1.5em;
-      }
-
-      .card-header:hover {
-          background-color: #e9e9e9;
-      }
-    </style>
-    </head>
-    <body>")
-
-  (define HTML-tail "
-    <script>
-      document.addEventListener('DOMContentLoaded', () => {
-          const cards = document.querySelectorAll('.card-content');
-
-          cards.forEach(card => {
-              card.addEventListener('click', function() {
-                  const body = this.querySelector('.card-body');
-                  body.style.display = body.style.display === 'block' ? 'none' : 'block'; // Toggle visibility
-              });
-          });
-      });
-    </script>
-    </body>
-    </html>
-    ")
-
-  (define (tag name . rest)
-    (define attrs "")
-    (define content "")
-
-    ;; parse
-    (let loop ((rest rest) (accept-keywords #t))
-      (if (pair? rest)
-        (cond
-          ((keyword? (car rest))
-            (set!
-              attrs
-              (string-append
-                attrs
-                (keyword->string (car rest)) "=\"" (to-string (cadr rest)) "\" "))
-            (loop (cddr rest) #t))
-          ((pair? (car rest))
-            (loop (car rest) #f)
-            (loop (cdr rest) #t))
-          (else
-            (set! content (string-append content (to-string (car rest)) " "))
-            (loop (cdr rest) #t)))))
-
-      (string-append "<" (symbol->string name) " " attrs ">" content "</" (symbol->string name) ">"))
-
   (define-type BBUsage
     (bbs unprintable:)
     orig-lbl-num
     (specialized-blocks unprintable:))
 
-  (define usage-map (make-table))
+  (define (json . rest)
+    (define (keyword->key k) (object->string (keyword->string k)))
+    (define (value->string v)
+      (cond
+        ((string? v) v)
+        ((number? v) (number->string v))
+        ((list? v) (list->json v))
+        ((table? v) (table->json v))
+        (else (error "json - unsupported datatype" v))))
+    (define (list->json l)
+      (string-append
+        "["
+          (string-concatenate (map value->string l) ", ")
+        "]"))
+    (define (table->json t)
+      (define (to-keyword x)
+        (cond
+          ((string? x) (string->keyword x))
+          ((number? x) (to-keyword (number->string x)))
+          (else (error "json - unsupported key type" x))))
+      (apply
+        json
+        (let loop ((key-value (table->list t)))
+          (cons (to-keyword key) (cons (value->string value) (loop (cdr key-value)))))))
 
-  (define (table-ref-or-set-default table key thunk)
-    (if (not (table-ref table key #f)) (table-set! table key (thunk)))
-    (table-ref table key))
+    (call-with-output-string
+      (lambda (port)
+        (define (output . rest) (apply println port: port rest))
+        (output "{")
+        (let loop ((rest rest))
+          (when (pair? rest)
+            (if (or (not (keyword? (car rest))) (null? (cdr rest))) (error "json expected key-value pair, got" rest))
+            (output (keyword->key (car rest)) ":" (value->string (cadr rest)) (if (null? (cddr rest)) "" ","))
+            (loop (cddr rest))))
+        (output "}"))))
 
-  (define (add-usage! bbs specialized-block)
-    (define orig-lbl-num (or (instr-comment-get (bb-label-instr specialized-block) 'orig-lbl) (error "no orig-lbl" bb)))
-    (define bbs-usage-map (table-ref-or-set-default usage-map bbs make-table))
-    (define usage
-      (table-ref-or-set-default
-        bbs-usage-map
-        orig-lbl-num
-        (lambda () (make-BBUsage bbs orig-lbl-num '()))))
+  (define specialized-blocks '())
 
-    (define specialized-blocks (BBUsage-specialized-blocks usage))
-    
-    (if (not (memq specialized-block specialized-blocks))
-      (BBUsage-specialized-blocks-set! usage (cons specialized-block specialized-blocks))))
-
-  (define (bb-usage-count bbs bb)
-    (InterpreterState-get-bb-execution-count state bbs bb))
-
-  (define (BBUsage-usage-count usage)
-    (define bbs (BBUsage-bbs usage))
-    (apply + (map (lambda (bb) (bb-usage-count bbs bb)) (BBUsage-specialized-blocks usage))))
-
-  (define (sorted-bb-usage)
-    (define acc '())
-    (table-for-each
-      (lambda (bbs bbs-usage-map)
-        (table-for-each
-          (lambda (orig-lbl-num usage)
-            (BBUsage-specialized-blocks-set!
-              usage
-              (list-sort
-                (lambda (bb1 bb2) (> (bb-usage-count bbs bb1) (bb-usage-count bbs bb2)))
-                (BBUsage-specialized-blocks usage)))
-            (set! acc (cons usage acc)))
-          bbs-usage-map))
-      usage-map)
-    
-    (list-sort (lambda (u1 u2) (> (BBUsage-usage-count u1) (BBUsage-usage-count u2))) acc))
-
-  (define (BBUsage-orig-bb-id usage)
-    (define bbs (BBUsage-bbs usage))
-    (define orig-lbl-num (BBUsage-orig-lbl-num usage))
-    (string-append (InterpreterState-get-bbs-name state bbs) "@" (number->string orig-lbl-num)))
-
-  (define (BBUsage-some-bb usage)
-    (car (BBUsage-specialized-blocks usage)))
-
-  (define (BBUsage-some-label usage)
-    (bb-label-instr (BBUsage-some-bb usage)))
-
-  (define (BBUsage-source usage)
-    (to-string (source->expression (node-source (instr-comment-get (BBUsage-some-label usage) 'node)))))
-
-  (define (to-string s) (if (string? s) s (object->string s)))
-
-  (define (bb-readable-ctx bb) (format-concatenate (format-gvm-instr-frame (bb-label-instr bb) '())))
-
-  (define (usage-to-html usage)
-    (define ncol (+ max-bb-columns 1))
-    (define bbs (BBUsage-bbs usage))
-    (define specialized-blocks (BBUsage-specialized-blocks usage))
-    (tag 'div class: 'card
-      (tag 'div class: 'card-content
-        (tag 'div class: 'card-header
-          (tag 'span class: 'card-title (BBUsage-orig-bb-id usage))
-          (tag 'span class: 'card-subtitles
-            (map
-              (lambda (bb) (tag 'span class: 'card-subtitle (InterpreterState-get-bb-execution-count state bbs bb)))
-              specialized-blocks)))
-        (tag 'div class: 'card-body
-          (tag 'span class: 'card-body-row (tag 'strong "source:") (tag 'code (BBUsage-source usage)))
-          (map
-            (lambda (bb)
-              (tag 'span class: 'card-body-row
-                (tag 'strong "bb" (bb-lbl-num bb) "(" (InterpreterState-get-bb-execution-count state bbs bb) "):")
-                (tag 'code (bb-readable-ctx bb))))
-            specialized-blocks)))))
-
-  (define (get-max-versions) 
-    (let loop ((m 0) (rest (sorted-bb-usage)))
-      (if (null? rest)
-        m
-        (loop
-          (max m (length (BBUsage-specialized-blocks usage)))
-          (cdr rest)))))
+  (define (collect-specialized-bb bb bbs)
+    (set! specialized-blocks
+      (cons
+        (json
+          id: (bb-lbl-num bb)
+          origin: (or (instr-comment-get (bb-label-instr bb) 'orig-lbl) (error "no orig-lbl" bb))
+          bbs: (object->string (InterpreterState-get-bbs-name state bbs))
+          source: (object->string (object->string (source->expression (node-source (instr-comment-get (bb-label-instr bb) 'node)))))
+          usage: (InterpreterState-get-bb-execution-count state bbs bb)
+          context: (object->string (format-concatenate (format-gvm-instr-frame (bb-label-instr bb) '()))))
+        specialized-blocks)))
 
   (for-each
     (lambda (module-proc)
       (let ((bbs (proc-obj-code module-proc)))
-        (bbs-for-each-bb (lambda (bb) (add-usage! bbs bb)) bbs)))
+        (bbs-for-each-bb (lambda (bb) (collect-specialized-bb bb bbs)) bbs)))
     (vector-ref gvm-interpret-ctx 0))
 
-  (with-output-to-file
-    "test.html"
-    (lambda ()
-      (println HTML-head)
-      (for-each (lambda (usage) (println (usage-to-html usage))) (sorted-bb-usage))
-      (println HTML-tail))))
+  (let ((content (json specialized-cfg: specialized-blocks)))
+    (with-output-to-file "visual-sbbv.json" (lambda () (display content)))))
 
 (define (InterpreterState-register-bbs-name! state proc)
   (table-set! (InterpreterState-bbs-names state) (proc-obj-code proc) (proc-obj-name proc)))
