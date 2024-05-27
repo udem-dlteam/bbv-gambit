@@ -6053,7 +6053,9 @@
           bbs: (object->string (InterpreterState-get-bbs-name state bbs))
           source: (object->string (object->string (source->expression (node-source (instr-comment-get (bb-label-instr bb) 'node)))))
           usage: (InterpreterState-get-bb-execution-count state bbs bb)
-          context: (object->string (format-concatenate (format-gvm-instr-frame (bb-label-instr bb) '()))))
+          context: (object->string (format-concatenate (format-gvm-instr-frame (bb-label-instr bb) '())))
+          predecessors: (bb-precedents bb)
+          details: (object->string (call-with-output-string (lambda (port) (write-bb bb '() port)))))
         specialized-blocks)))
 
   (for-each
@@ -6062,7 +6064,7 @@
         (bbs-for-each-bb (lambda (bb) (collect-specialized-bb bb bbs)) bbs)))
     (vector-ref gvm-interpret-ctx 0))
 
-  (let ((content (json specialized-cfg: specialized-blocks)))
+  (let ((content (json specializedCFG: specialized-blocks)))
     (with-output-to-file "visual-sbbv.json" (lambda () (display content)))))
 
 (define (InterpreterState-register-bbs-name! state proc)
