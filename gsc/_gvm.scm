@@ -856,7 +856,7 @@
 ;; is always the entry point.
 
 (define (bbs-purify bbs)
-  (define optim? #f)
+  (define optim? #t)
   (define (purify-step bbs0)
     (let* ((bbs1 (bbs-remove-jump-cascades bbs0))
            (bbs2 (bbs-remove-dead-code bbs1))
@@ -6064,7 +6064,7 @@
         (bbs-for-each-bb (lambda (bb) (collect-specialized-bb bb bbs)) bbs)))
     (vector-ref gvm-interpret-ctx 0))
 
-  (let ((content (json specializedCFG: specialized-blocks)))
+  (let ((content (json compiler: "gambit" specializedCFG: specialized-blocks)))
     (with-output-to-file "visual-sbbv.json" (lambda () (display content)))))
 
 (define (InterpreterState-register-bbs-name! state proc)
