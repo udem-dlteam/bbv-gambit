@@ -6064,7 +6064,7 @@
         (bbs-for-each-bb (lambda (bb) (collect-specialized-bb bb bbs)) bbs)))
     (vector-ref gvm-interpret-ctx 0))
 
-  (let ((content (json compiler: "gambit" specializedCFG: specialized-blocks)))
+  (let ((content (json compiler: "\"gambit\"" specializedCFG: specialized-blocks)))
     (with-output-to-file "visual-sbbv.json" (lambda () (display content)))))
 
 (define (InterpreterState-register-bbs-name! state proc)
