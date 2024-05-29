@@ -440,6 +440,28 @@
 (define (bb-precedents bb)               (vector-ref bb 4))
 (define (bb-precedents-set! bb l)        (vector-set! bb 4 l))
 
+(define (bb-succesors bb)
+  (let ((branch (bb-branch-instr bb)))
+    (case (gvm-instr-kind branch)
+
+      ((ifjump)
+        (list (ifjump-true branch) (ifjump-false branch)))
+      ((jump)
+        (let ((opnd (jump-opnd branch)))
+          (if (lbl? opnd) (list (lbl-num opnd)) '())))
+      (else
+        (compiler-internal-error
+          "bb-succesors, unknown branch kind")))))
+
+(define (bb-jump-return bb)
+  (let ((branch (bb-branch-instr bb)))
+    (case (gvm-instr-kind branch)
+      ((jump)
+        (let ((ret (jump-ret branch)))
+          (if ret (list ret) '())))
+      (else
+        '()))))
+
 (define (bb-entry-frame-size bb)
   (frame-size (gvm-instr-frame (bb-label-instr bb))))
 
@@ -6045,6 +6067,8 @@
   (define specialized-blocks '())
 
   (define (collect-specialized-bb bb bbs)
+    (define (flat-map . args)
+      (apply append (apply map args)))
     (set! specialized-blocks
       (cons
         (json
@@ -6055,6 +6079,19 @@
           usage: (InterpreterState-get-bb-execution-count state bbs bb)
           context: (object->string (format-concatenate (format-gvm-instr-frame (bb-label-instr bb) '())))
           predecessors: (bb-precedents bb)
+          successors: (bb-succesors bb)
+          ret: (bb-jump-return bb)
+          jumps:
+            (flat-map
+              (lambda (bbs-table)
+                (map
+                  (lambda (bb-count)
+                    (json
+                      bbs: (object->string (InterpreterState-get-bbs-name state (car bbs-table)))
+                      id: (car bb-count)
+                      count: (cdr bb-count)))
+                  (table->list (cdr bbs-table))))
+              (table->list (get-branch-counters (bb-branch-instr bb))))
           details: (object->string (call-with-output-string (lambda (port) (write-bb bb '() port)))))
         specialized-blocks)))
 
