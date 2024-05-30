@@ -6080,6 +6080,7 @@
           context: (object->string (format-concatenate (format-gvm-instr-frame (bb-label-instr bb) '())))
           predecessors: (bb-precedents bb)
           successors: (bb-succesors bb)
+          references: (bb-references bb)
           ret: (bb-jump-return bb)
           jumps:
             (flat-map
