@@ -877,7 +877,7 @@
 ;; through the process.  The first basic block of a 'purified' basic block set
 ;; is always the entry point.
 
-(define (bbs-purify bbs)
+(define (bbs-purify bbs proc)
   (define optim? #t)
   (define (purify-step bbs0)
     (let* ((bbs1 (bbs-remove-jump-cascades bbs0))
@@ -886,7 +886,7 @@
            (bbs4 (bbs-remove-useless-jumps bbs3)))
       (cons bbs2 bbs4)))
 
-  (let loop ((bbs0 (bbs-type-specialize (if (not optim?) bbs (cdr (purify-step bbs))))))
+  (let loop ((bbs0 (bbs-type-specialize (if (not optim?) bbs (cdr (purify-step bbs))) proc)))
     (if (not optim?) (begin (bbs-determine-refs! bbs0) (bbs-order bbs0))
     (let* ((bbs1-bbs2 (purify-step bbs0))
            (bbs1 (car bbs1-bbs2))
@@ -2204,11 +2204,26 @@
 
 (define debug-bbv? #f)
 (define track-version-history? #f)
+(define track-version-history-for-visualization-tool? #f)
+
+(define (track-version-history-for-visualization-tool?-set! x)
+  (set! track-version-history-for-visualization-tool? x))
+
+(define-macro (track-version-history-for-visualization-tool . args)
+  `(if track-version-history-for-visualization-tool? (track-version-history-for-visualization-tool* ,@args)))
+
+(define version-history (make-table test: string=?))
+(define (track-version-history-for-visualization-tool* bb bbs-name event . args)
+  (if (not (table-ref version-history bbs-name #f)) (table-set! version-history bbs-name (make-table)))
+  (let* ((bbs-history (table-ref version-history bbs-name))
+         (history (table-ref bbs-history bb '()))
+         (new-history (append history (cons event args))))
+    (table-set! bbs-history bb new-history)))
 
 (define instr-cost 1)
 (define call-cost 100)
 
-(define (bbs-type-specialize bbs)
+(define (bbs-type-specialize bbs proc)
 
   (define (any-bb-has-version-limit-above-0?)
     (let ((has-version-limit-above-0? #f))
@@ -2222,7 +2237,7 @@
       has-version-limit-above-0?))
 
   (if (any-bb-has-version-limit-above-0?)
-      (bbs-type-specialize* bbs) ;; create a specialized bbs
+      (bbs-type-specialize* bbs proc) ;; create a specialized bbs
       bbs)) ;; leave bbs intact
 
 (define (bb-version-limit bb)
@@ -2234,7 +2249,8 @@
   #t #;
   (and (>= lbl 52) (<= lbl 52))) ;; filter these labels
 
-(define (bbs-type-specialize* bbs)
+(define (bbs-type-specialize* bbs bbs-proc)
+  (define bbs-proc-name (proc-obj-name bbs-proc))
 
   (define-macro (reachability-debug lbl . rest)
     #f)
@@ -2534,6 +2550,10 @@
               (version-is-live?
                 (and most-recent-version
                     (bb-versions-active-lbl-get bb-versions version-types))))
+
+        (track-version-history-for-visualization-tool bb bbs-proc-name 'request types-before)
+        (if (not (locenv-eqv? types-before version-types))
+            (track-version-history-for-visualization-tool bb bbs-proc-name 'replace types-before version-types))
         (if version-is-live?
             (begin
               (reachability-debug most-recent-version 'reaching 'live)
@@ -3151,6 +3171,7 @@
               (versions-to-merge (map (lambda (i) (vector-ref types-lbl-vect i)) in))
               (versions-to-keep (map (lambda (i) (vector-ref types-lbl-vect i)) out))
               (merged-types (types-merge-multi (map car versions-to-merge) #t))
+              (merged-types-before-replacement merged-types)
               (existing-lbl-of-merged-type 
                 (bb-versions-all-lbl-get bb-versions merged-types))
               (new-lbl (or (and existing-lbl-of-merged-type
@@ -3159,6 +3180,10 @@
               (merged-types (if (not existing-lbl-of-merged-type)
                                 merged-types
                                 (get-version-types new-lbl))))
+
+        (track-version-history-for-visualization-tool bb bbs-proc-name 'merge versions-to-merge merged-types-before-replacement)
+        (if (not (locenv-eqv? merged-types-before-replacement merged-types))
+            (track-version-history-for-visualization-tool bb bbs-proc-name 'replace merged-types-before-replacement merged-types))
 
         (bb-versions-active-lbl-add! bb-versions merged-types new-lbl)
 
@@ -6033,6 +6058,7 @@
     (define (value->string v)
       (cond
         ((string? v) v)
+        ((symbol? v) (object->string (symbol->string v)))
         ((number? v) (number->string v))
         ((list? v) (list->json v))
         ((table? v) (table->json v))
@@ -6096,13 +6122,31 @@
           details: (object->string (call-with-output-string (lambda (port) (write-bb bb '() port)))))
         specialized-blocks)))
 
+  (define (history)
+    (define dummy '())
+
+    (table-for-each
+      (lambda (bbs-name bbs-history)
+        (table-for-each
+          (lambda (bb event)
+            (set! dummy (cons (list (object->string bbs-name) (bb-lbl-num bb) (car event)) dummy)))
+          bbs-history))
+      version-history)
+    
+    dummy)
+
   (for-each
     (lambda (module-proc)
       (let ((bbs (proc-obj-code module-proc)))
         (bbs-for-each-bb (lambda (bb) (collect-specialized-bb bb bbs)) bbs)))
     (vector-ref gvm-interpret-ctx 0))
 
-  (let ((content (json compiler: "\"gambit\"" specializedCFG: specialized-blocks)))
+
+
+  (let ((content (json
+                    compiler: "\"gambit\""
+                    specializedCFG: specialized-blocks
+                    history: (history))))
     (with-output-to-file "visual-sbbv.json" (lambda () (display content)))))
 
 (define (InterpreterState-register-bbs-name! state proc)
