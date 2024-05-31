@@ -462,8 +462,11 @@
       (else
         '()))))
 
+(define (bb-entry-frame bb)
+  (gvm-instr-frame (bb-label-instr bb)))
+
 (define (bb-entry-frame-size bb)
-  (frame-size (gvm-instr-frame (bb-label-instr bb))))
+  (frame-size (bb-entry-frame bb)))
 
 (define (bb-entry-nb-params bb)
   (let ((lbl (bb-label-instr bb)))
@@ -2206,19 +2209,40 @@
 (define track-version-history? #f)
 (define track-version-history-for-visualization-tool? #f)
 
+(define track-version-history-counter 0)
 (define (track-version-history-for-visualization-tool?-set! x)
   (set! track-version-history-for-visualization-tool? x))
 
-(define-macro (track-version-history-for-visualization-tool . args)
-  `(if track-version-history-for-visualization-tool? (track-version-history-for-visualization-tool* ,@args)))
+(define-macro (add-version-history-event event-name . args)
+  (let ((event-creator (string->symbol (string-append "add-version-history-event*:" (symbol->string event-name)))))
+    `(if track-version-history-for-visualization-tool? (add-version-history-event* (,event-creator bbs-proc-name ,@args)))))
 
-(define version-history (make-table test: string=?))
-(define (track-version-history-for-visualization-tool* bb bbs-name event . args)
-  (if (not (table-ref version-history bbs-name #f)) (table-set! version-history bbs-name (make-table)))
-  (let* ((bbs-history (table-ref version-history bbs-name))
-         (history (table-ref bbs-history bb '()))
-         (new-history (append history (cons event args))))
-    (table-set! bbs-history bb new-history)))
+(define (add-version-history-event*:create bbs-name orig-lbl id context)
+  (list->table
+    `((event . create)
+      (bbs . ,(object->string bbs-name))
+      (origin . ,orig-lbl)
+      (id . ,id)
+      (context . ,(object->string context)))))
+
+(define (add-version-history-event*:merge bbs-name orig-lbl merged-lbls result-lbl context)
+  #f)
+(define (add-version-history-event*:request bbs-name orig-lbl result-lbl)
+  #f)
+(define (add-version-history-event*:replace bbs-name orig-lbl from-lbl to-lbl)
+  #f)
+(define (add-version-history-event*:unreachable bbs-name orig-lbl lbl)
+  #f)
+(define (add-version-history-event*:reachable bbs-name orig-lbl lbl)
+  #f)
+
+(define version-events-history '())
+
+(define (add-version-history-event* event)
+  (set! version-events-history (cons event version-events-history)))
+
+(define (get-version-events-history)
+  (reverse version-events-history))
 
 (define instr-cost 1)
 (define call-cost 100)
@@ -2271,6 +2295,9 @@
 
   (define versions (make-table))
   (define lbl-mapping (make-table))
+
+  (define (types->json-format bb specialized-lbl types)
+    (object->string (format-concatenate (format-frame (gvm-instr-frame (bb-label-instr bb)) types 'combined '()))))
 
   (define (replacement-lbl-num lbl)
     (let ((x (table-ref lbl-mapping lbl #f)))
@@ -2551,15 +2578,16 @@
                 (and most-recent-version
                     (bb-versions-active-lbl-get bb-versions version-types))))
 
-        (track-version-history-for-visualization-tool bb bbs-proc-name 'request types-before)
-        (if (not (locenv-eqv? types-before version-types))
-            (track-version-history-for-visualization-tool bb bbs-proc-name 'replace types-before version-types))
+
         (if version-is-live?
             (begin
               (reachability-debug most-recent-version 'reaching 'live)
               (if from-lbl (add-edge! BFSTree from-lbl most-recent-version onrevive))
               most-recent-version)
             (let* ((new-lbl (or most-recent-version (new-lbl! lbl))))
+              (if (not most-recent-version)
+                  (add-version-history-event create lbl new-lbl
+                    (frame->string (bb-entry-frame bb) version-types)))
               (bb-versions-active-lbl-add! bb-versions version-types new-lbl)
               (track-version-history lbl (list 'add from-lbl)) ;; track history of versions
               (queue-put! work-queue (make-queue-task bb new-lbl))
@@ -3156,7 +3184,6 @@
     (define (onkill lbl)
       (let* ((orig-lbl (orig-lbl-mapping-ref lbl))
               (bb-versions (get-bb-versions-from-lbl orig-lbl)))
-        ;(pp (list 'onkill lbl)) 
         (reachability-debug lbl 'kill)
         (bb-versions-active-lbl-remove-unreachable! bb-versions)))
 
@@ -3180,10 +3207,6 @@
               (merged-types (if (not existing-lbl-of-merged-type)
                                 merged-types
                                 (get-version-types new-lbl))))
-
-        (track-version-history-for-visualization-tool bb bbs-proc-name 'merge versions-to-merge merged-types-before-replacement)
-        (if (not (locenv-eqv? merged-types-before-replacement merged-types))
-            (track-version-history-for-visualization-tool bb bbs-proc-name 'replace merged-types-before-replacement merged-types))
 
         (bb-versions-active-lbl-add! bb-versions merged-types new-lbl)
 
@@ -4789,9 +4812,11 @@
         (types (gvm-instr-types gvm-instr)))
     (format-frame frame types 'combined options)))
 
+(define (frame->string frame types)
+  (format-concatenate (format-frame frame types 'combined '())))
+
 (define (write-frame frame types port)
-  (display (format-concatenate (format-frame frame types 'combined '()))
-           port))
+  (display (frame->string frame types) port))
 
 (define (format-frame frame types style options)
 
@@ -6060,24 +6085,38 @@
         ((string? v) v)
         ((symbol? v) (object->string (symbol->string v)))
         ((number? v) (number->string v))
-        ((list? v) (list->json v))
+        ((or (null? v) (pair? v)) (list->json v))
+        ((vector? v) (list->json (vector->list v)))
         ((table? v) (table->json v))
+        ((eq? v #t) "true")
+        ((eq? v #f) "false")
         (else (error "json - unsupported datatype" v))))
     (define (list->json l)
+      (define (map-non-proper f l)
+        (cond
+          ((pair? l) (cons (f (car l)) (map-non-proper f (cdr l))))
+          ((null? l) '())
+          (else (cons (f l) '()))))
       (string-append
         "["
-          (string-concatenate (map value->string l) ", ")
+          (string-concatenate (map-non-proper value->string l) ", ")
         "]"))
     (define (table->json t)
       (define (to-keyword x)
         (cond
           ((string? x) (string->keyword x))
+          ((symbol? x) (to-keyword (symbol->string x)))
           ((number? x) (to-keyword (number->string x)))
           (else (error "json - unsupported key type" x))))
       (apply
         json
-        (let loop ((key-value (table->list t)))
-          (cons (to-keyword key) (cons (value->string value) (loop (cdr key-value)))))))
+        (let loop ((pairs (table->list t)))
+          (if (null? pairs)
+              '()
+              (cons
+                (to-keyword (caar pairs))
+                (cons (value->string (cdar pairs))
+                      (loop (cdr pairs))))))))
 
     (call-with-output-string
       (lambda (port)
@@ -6122,19 +6161,6 @@
           details: (object->string (call-with-output-string (lambda (port) (write-bb bb '() port)))))
         specialized-blocks)))
 
-  (define (history)
-    (define dummy '())
-
-    (table-for-each
-      (lambda (bbs-name bbs-history)
-        (table-for-each
-          (lambda (bb event)
-            (set! dummy (cons (list (object->string bbs-name) (bb-lbl-num bb) (car event)) dummy)))
-          bbs-history))
-      version-history)
-    
-    dummy)
-
   (for-each
     (lambda (module-proc)
       (let ((bbs (proc-obj-code module-proc)))
@@ -6146,7 +6172,7 @@
   (let ((content (json
                     compiler: "\"gambit\""
                     specializedCFG: specialized-blocks
-                    history: (history))))
+                    history: (get-version-events-history))))
     (with-output-to-file "visual-sbbv.json" (lambda () (display content)))))
 
 (define (InterpreterState-register-bbs-name! state proc)
