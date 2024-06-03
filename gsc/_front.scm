@@ -342,6 +342,7 @@
 
                (let ((opt (assq 'bbv-merge-strategy opts)))
                  (set-bbv-merge-strategy! (and opt (cadr opt))))
+               (if compiler-option-gvm-interpret (track-version-history-for-visualization-tool?-set! #t))
 
                (let* ((meta-info
                        (**meta-info->alist
@@ -879,7 +880,7 @@
             (newline info-port)
             (newline info-port)))
 
-      (proc-obj-code-set! main-proc (bbs-purify *bbs*))
+      (proc-obj-code-set! main-proc (bbs-purify *bbs* main-proc))
 
       (set! *bb* '())
       (set! *bbs* '())
@@ -1105,7 +1106,7 @@
                                       (do-body)))
                   (do-body))
 
-              (proc-obj-code-set! proc (bbs-purify *bbs*))
+              (proc-obj-code-set! proc (bbs-purify *bbs* proc))
 
               (set! proc-queue p-proc-queue)
               (set! known-procs p-known-procs)

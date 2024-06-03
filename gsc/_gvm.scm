@@ -440,8 +440,33 @@
 (define (bb-precedents bb)               (vector-ref bb 4))
 (define (bb-precedents-set! bb l)        (vector-set! bb 4 l))
 
+(define (bb-succesors bb)
+  (let ((branch (bb-branch-instr bb)))
+    (case (gvm-instr-kind branch)
+
+      ((ifjump)
+        (list (ifjump-true branch) (ifjump-false branch)))
+      ((jump)
+        (let ((opnd (jump-opnd branch)))
+          (if (lbl? opnd) (list (lbl-num opnd)) '())))
+      (else
+        (compiler-internal-error
+          "bb-succesors, unknown branch kind")))))
+
+(define (bb-jump-return bb)
+  (let ((branch (bb-branch-instr bb)))
+    (case (gvm-instr-kind branch)
+      ((jump)
+        (let ((ret (jump-ret branch)))
+          (if ret (list ret) '())))
+      (else
+        '()))))
+
+(define (bb-entry-frame bb)
+  (gvm-instr-frame (bb-label-instr bb)))
+
 (define (bb-entry-frame-size bb)
-  (frame-size (gvm-instr-frame (bb-label-instr bb))))
+  (frame-size (bb-entry-frame bb)))
 
 (define (bb-entry-nb-params bb)
   (let ((lbl (bb-label-instr bb)))
@@ -855,7 +880,7 @@
 ;; through the process.  The first basic block of a 'purified' basic block set
 ;; is always the entry point.
 
-(define (bbs-purify bbs)
+(define (bbs-purify bbs proc)
   (define optim? #t)
   (define (purify-step bbs0)
     (let* ((bbs1 (bbs-remove-jump-cascades bbs0))
@@ -864,7 +889,7 @@
            (bbs4 (bbs-remove-useless-jumps bbs3)))
       (cons bbs2 bbs4)))
 
-  (let loop ((bbs0 (bbs-type-specialize (if (not optim?) bbs (cdr (purify-step bbs))))))
+  (let loop ((bbs0 (bbs-type-specialize (if (not optim?) bbs (cdr (purify-step bbs))) proc)))
     (if (not optim?) (begin (bbs-determine-refs! bbs0) (bbs-order bbs0))
     (let* ((bbs1-bbs2 (purify-step bbs0))
            (bbs1 (car bbs1-bbs2))
@@ -960,7 +985,11 @@
                           (make-label-simple
                            lbl2
                            (gvm-instr-frame last-jump/ret)
-                           (gvm-instr-comment last-jump/ret)))
+                           (gvm-instr-comment
+                              (bb-label-instr
+                                (stretchable-vector-ref
+                                  (bbs-basic-blocks bbs)
+                                  (lbl-num (jump-opnd last-jump/ret)))))))
                          new-bbs)))
                   (bb-branch-instr-set!
                    new-bb
@@ -2178,11 +2207,65 @@
 
 (define debug-bbv? #f)
 (define track-version-history? #f)
+(define track-version-history-for-visualization-tool? #f)
+
+(define track-version-history-counter 0)
+(define (track-version-history-for-visualization-tool?-set! x)
+  (set! track-version-history-for-visualization-tool? x))
+
+(define-macro (add-version-history-event event-name . args)
+  (let ((event-creator (string->symbol (string-append "add-version-history-event*:" (symbol->string event-name)))))
+    `(if track-version-history-for-visualization-tool? (add-version-history-event* (,event-creator bbs-proc-name ,@args)))))
+
+(define (add-version-history-event*:create bbs-name orig-lbl id context)
+  (list->table
+    `((event . create)
+      (bbs . ,(object->string bbs-name))
+      (origin . ,orig-lbl)
+      (id . ,id)
+      (context . ,(object->string context)))))
+
+(define (add-version-history-event*:merge bbs-name orig-lbl merged-lbls result-lbl context)
+  (list->table
+    `((event . merge)
+      (bbs . ,(object->string bbs-name))
+      (origin . ,orig-lbl)
+      (merged . ,merged-lbls)
+      (id . ,result-lbl)
+      (context . ,(object->string context)))))
+
+(define (add-version-history-event*:request bbs-name orig-lbl result-lbl)
+  #f)
+
+(define (add-version-history-event*:replace bbs-name orig-lbl from-lbl to-lbl)
+  #f)
+
+(define (add-version-history-event*:unreachable bbs-name orig-lbl lbl)
+  (list->table
+    `((event . unreachable)
+      (bbs . ,(object->string bbs-name))
+      (origin . ,orig-lbl)
+      (id . ,lbl))))
+
+(define (add-version-history-event*:reachable bbs-name orig-lbl lbl)
+  (list->table
+    `((event . reachable)
+      (bbs . ,(object->string bbs-name))
+      (origin . ,orig-lbl)
+      (id . ,lbl))))
+
+(define version-events-history '())
+
+(define (add-version-history-event* event)
+  (set! version-events-history (cons event version-events-history)))
+
+(define (get-version-events-history)
+  (reverse version-events-history))
 
 (define instr-cost 1)
 (define call-cost 100)
 
-(define (bbs-type-specialize bbs)
+(define (bbs-type-specialize bbs proc)
 
   (define (any-bb-has-version-limit-above-0?)
     (let ((has-version-limit-above-0? #f))
@@ -2196,7 +2279,7 @@
       has-version-limit-above-0?))
 
   (if (any-bb-has-version-limit-above-0?)
-      (bbs-type-specialize* bbs) ;; create a specialized bbs
+      (bbs-type-specialize* bbs proc) ;; create a specialized bbs
       bbs)) ;; leave bbs intact
 
 (define (bb-version-limit bb)
@@ -2208,7 +2291,8 @@
   #t #;
   (and (>= lbl 52) (<= lbl 52))) ;; filter these labels
 
-(define (bbs-type-specialize* bbs)
+(define (bbs-type-specialize* bbs bbs-proc)
+  (define bbs-proc-name (proc-obj-name bbs-proc))
 
   (define-macro (reachability-debug lbl . rest)
     #f)
@@ -2229,6 +2313,9 @@
 
   (define versions (make-table))
   (define lbl-mapping (make-table))
+
+  (define (types->json-format bb specialized-lbl types)
+    (object->string (format-concatenate (format-frame (gvm-instr-frame (bb-label-instr bb)) types 'combined '()))))
 
   (define (replacement-lbl-num lbl)
     (let ((x (table-ref lbl-mapping lbl #f)))
@@ -2508,12 +2595,17 @@
               (version-is-live?
                 (and most-recent-version
                     (bb-versions-active-lbl-get bb-versions version-types))))
+
+
         (if version-is-live?
             (begin
               (reachability-debug most-recent-version 'reaching 'live)
               (if from-lbl (add-edge! BFSTree from-lbl most-recent-version onrevive))
               most-recent-version)
             (let* ((new-lbl (or most-recent-version (new-lbl! lbl))))
+              (if (not most-recent-version)
+                  (add-version-history-event create lbl new-lbl
+                    (frame->string (bb-entry-frame bb) version-types)))
               (bb-versions-active-lbl-add! bb-versions version-types new-lbl)
               (track-version-history lbl (list 'add from-lbl)) ;; track history of versions
               (queue-put! work-queue (make-queue-task bb new-lbl))
@@ -2650,6 +2742,7 @@
                         "walk-instr, unknown 'gvm-instr':" gvm-instr)))))
                 (gvm-instr-types-set! new-instr types-after)
                 (instr-comment-add! new-instr 'orig-lbl orig-lbl)
+                (instr-comment-add! new-instr 'new-lbl new-lbl)
                 new-instr))
 
             ((apply)
@@ -3095,11 +3188,11 @@
         (> (bb-versions-active-lbl-length bb-versions) (max 1 (bb-version-limit bb)))))
 
     (define (onrevive lbl)
+      (add-version-history-event reachable (orig-lbl-mapping-ref lbl) lbl)
       (if (new-lbl? lbl new-bbs)
           (let* ((orig-lbl (orig-lbl-mapping-ref lbl))
                   (bb (lbl-num->bb orig-lbl bbs))
                   (bb-versions (get-bb-versions-from-lbl orig-lbl)))
-            ;(pp (list 'onrevive lbl)) 
             (reachability-debug lbl 'revive)
             (bb-versions-active-lbl-add!
               bb-versions
@@ -3109,8 +3202,8 @@
 
     (define (onkill lbl)
       (let* ((orig-lbl (orig-lbl-mapping-ref lbl))
-              (bb-versions (get-bb-versions-from-lbl orig-lbl)))
-        ;(pp (list 'onkill lbl)) 
+             (bb-versions (get-bb-versions-from-lbl orig-lbl)))
+        (add-version-history-event unreachable orig-lbl lbl)
         (reachability-debug lbl 'kill)
         (bb-versions-active-lbl-remove-unreachable! bb-versions)))
 
@@ -3125,6 +3218,7 @@
               (versions-to-merge (map (lambda (i) (vector-ref types-lbl-vect i)) in))
               (versions-to-keep (map (lambda (i) (vector-ref types-lbl-vect i)) out))
               (merged-types (types-merge-multi (map car versions-to-merge) #t))
+              (merged-types-before-replacement merged-types)
               (existing-lbl-of-merged-type 
                 (bb-versions-all-lbl-get bb-versions merged-types))
               (new-lbl (or (and existing-lbl-of-merged-type
@@ -3133,6 +3227,13 @@
               (merged-types (if (not existing-lbl-of-merged-type)
                                 merged-types
                                 (get-version-types new-lbl))))
+
+        (add-version-history-event
+          merge
+          lbl
+          (map cdr versions-to-merge)
+          new-lbl
+          (frame->string (bb-entry-frame bb) merged-types))
 
         (bb-versions-active-lbl-add! bb-versions merged-types new-lbl)
 
@@ -4738,9 +4839,11 @@
         (types (gvm-instr-types gvm-instr)))
     (format-frame frame types 'combined options)))
 
+(define (frame->string frame types)
+  (format-concatenate (format-frame frame types 'combined '())))
+
 (define (write-frame frame types port)
-  (display (format-concatenate (format-frame frame types 'combined '()))
-           port))
+  (display (frame->string frame types) port))
 
 (define (format-frame frame types style options)
 
@@ -5261,7 +5364,11 @@
            gvm-opnd))))
 
 (define (format-gvm-lbl lbl options)
-  (string-append (if (memq 'new options) "%" "#") (number->string lbl)))
+  (define rename
+    (let ((x (memq rename-lbl: options)))
+      (if x (cadr x) (lambda (l) l))))
+
+  (string-append (if (memq 'new options) "%" "#") (number->string (rename lbl))))
 
 (define (format-gvm-obj val quote?)
   (let ((str
@@ -5839,7 +5946,8 @@
       (pprint '***GVM-Interpreter)
       (let ((state (init-interpreter-state gvm-interpret-ctx)))
         (InterpreterState-execution-loop state)
-        (InterpreterState-primitive-counter-trace state)))))
+        (InterpreterState-primitive-counter-trace state)
+        (InterpreterState-bb-execution-count-trace state gvm-interpret-ctx)))))
 
 (define (InterpreterState-execution-loop state)
   (let loop ()
@@ -5870,6 +5978,7 @@
   assert-types?
   (primitive-counter unprintable:)
   (bbs-names unprintable:)
+  (bb-execution-count unprintable:)
   ctx)
 
 (define (InterpreterState-stack state) (RTE-stack (InterpreterState-rte state)))
@@ -5910,6 +6019,7 @@
             #f                                       ;; assert-types?
             (make-table)                             ;; primitive counter
             (make-table test: eq? weak-keys: #t)     ;; bbs-names
+            (make-table test: eq?)                   ;; bb-execution-count
             gvm-interpret-ctx))                      ;; ctx
          (rte (InterpreterState-rte state)))
     ;; connect RTE to the state
@@ -5924,6 +6034,8 @@
     (add-global-primitive rte '##gvm-interpreter-debug)
     (add-global-primitive rte '##fixnum->string)
     (add-global-primitive rte 'command-line)
+
+    (InterpreterState-increment-bb-execution-count! state)
   
     state))
 
@@ -5967,11 +6079,134 @@
     (display-error "\n")
     (error 1)))
 
+(define (InterpreterState-increment-bb-execution-count! state)
+  (define bbs (InterpreterState-bbs state))
+  (define bb (InterpreterState-bb state))
+  (define bb-execution-count (InterpreterState-bb-execution-count state))
+  (define bbs-count
+    (begin
+      (if (not (table-ref bb-execution-count bbs #f))
+        (table-set! bb-execution-count bbs (make-table test: eq?)))
+      (table-ref bb-execution-count bbs)))
+
+  (table-set! bbs-count bb (+ (table-ref bbs-count bb 0) 1)))
+
+(define (InterpreterState-get-bb-execution-count state bbs bb)
+  (define bb-execution-count (InterpreterState-bb-execution-count state))
+  (define bbs-count (table-ref bb-execution-count bbs #f))
+  (if (not bbs-count) 0 (table-ref bbs-count bb 0)))
+
 (define (InterpreterState-instr-index-increment! state last-instr)
   ;; increment index if instruction is not a jump
   ;; jump instruction reset index to 0 instead
   (or (memq (gvm-instr-kind last-instr) '(jump ifjump))
       (InterpreterState-instr-index-set! state (+ (InterpreterState-instr-index state) 1))))
+
+(define (InterpreterState-bb-execution-count-trace state gvm-interpret-ctx)
+  ;;(define (with-output-to-file _ f) (f))
+  (define-type BBUsage
+    (bbs unprintable:)
+    orig-lbl-num
+    (specialized-blocks unprintable:))
+
+  (define (json . rest)
+    (define (keyword->key k) (object->string (keyword->string k)))
+    (define (value->string v)
+      (cond
+        ((string? v) v)
+        ((symbol? v) (object->string (symbol->string v)))
+        ((number? v) (number->string v))
+        ((or (null? v) (pair? v)) (list->json v))
+        ((vector? v) (list->json (vector->list v)))
+        ((table? v) (table->json v))
+        ((eq? v #t) "true")
+        ((eq? v #f) "false")
+        (else (error "json - unsupported datatype" v))))
+    (define (list->json l)
+      (define (map-non-proper f l)
+        (cond
+          ((pair? l) (cons (f (car l)) (map-non-proper f (cdr l))))
+          ((null? l) '())
+          (else (cons (f l) '()))))
+      (string-append
+        "["
+          (string-concatenate (map-non-proper value->string l) ", ")
+        "]"))
+    (define (table->json t)
+      (define (to-keyword x)
+        (cond
+          ((string? x) (string->keyword x))
+          ((symbol? x) (to-keyword (symbol->string x)))
+          ((number? x) (to-keyword (number->string x)))
+          (else (error "json - unsupported key type" x))))
+      (apply
+        json
+        (let loop ((pairs (table->list t)))
+          (if (null? pairs)
+              '()
+              (cons
+                (to-keyword (caar pairs))
+                (cons (value->string (cdar pairs))
+                      (loop (cdr pairs))))))))
+
+    (call-with-output-string
+      (lambda (port)
+        (define (output . rest) (apply println port: port rest))
+        (output "{")
+        (let loop ((rest rest))
+          (when (pair? rest)
+            (if (or (not (keyword? (car rest))) (null? (cdr rest))) (error "json expected key-value pair, got" rest))
+            (output (keyword->key (car rest)) ":" (value->string (cadr rest)) (if (null? (cddr rest)) "" ","))
+            (loop (cddr rest))))
+        (output "}"))))
+
+  (define specialized-blocks '())
+
+  (define (collect-specialized-bb bb bbs)
+    (define (flat-map . args)
+      (apply append (apply map args)))
+    (define (convert-lbl lbl #!optional (bbs bbs))
+      (or (instr-comment-get (bb-label-instr (lbl-num->bb lbl bbs)) 'new-lbl) (error "no new-lbl" bb)))
+    (set! specialized-blocks
+      (cons
+        (json
+          id: (convert-lbl (bb-lbl-num bb))
+          origin: (or (instr-comment-get (bb-label-instr bb) 'orig-lbl) (error "no orig-lbl" bb))
+          bbs: (object->string (InterpreterState-get-bbs-name state bbs))
+          source: (object->string (object->string (source->expression (node-source (instr-comment-get (bb-label-instr bb) 'node)))))
+          usage: (InterpreterState-get-bb-execution-count state bbs bb)
+          context: (object->string (format-concatenate (format-gvm-instr-frame (bb-label-instr bb) '())))
+          predecessors: (map convert-lbl (bb-precedents bb))
+          successors: (map convert-lbl (bb-succesors bb))
+          references: (map convert-lbl (bb-references bb))
+          ret: (map convert-lbl (bb-jump-return bb))
+          jumps:
+            (flat-map
+              (lambda (bbs-table)
+                (map
+                  (lambda (bb-count)
+                    (json
+                      bbs: (object->string (InterpreterState-get-bbs-name state (car bbs-table)))
+                      id: (convert-lbl (car bb-count) (car bbs-table))
+                      count: (cdr bb-count)))
+                  (table->list (cdr bbs-table))))
+              (table->list (get-branch-counters (bb-branch-instr bb))))
+          details: (object->string (call-with-output-string (lambda (port) (write-bb bb (list rename-lbl: convert-lbl) port)))))
+        specialized-blocks)))
+
+  (for-each
+    (lambda (module-proc)
+      (let ((bbs (proc-obj-code module-proc)))
+        (bbs-for-each-bb (lambda (bb) (collect-specialized-bb bb bbs)) bbs)))
+    (vector-ref gvm-interpret-ctx 0))
+
+
+
+  (let ((content (json
+                    compiler: "\"gambit\""
+                    specializedCFG: specialized-blocks
+                    history: (get-version-events-history))))
+    (with-output-to-file "visual-sbbv.json" (lambda () (display content)))))
 
 (define (InterpreterState-register-bbs-name! state proc)
   (table-set! (InterpreterState-bbs-names state) (proc-obj-code proc) (proc-obj-name proc)))
@@ -6282,6 +6517,7 @@
     (if ret (RTE-set! rte backend-return-label-location ret))
     (InterpreterState-bbs-set! state bbs)
     (InterpreterState-bb-set! state bb)
+    (InterpreterState-increment-bb-execution-count! state)
     (InterpreterState-instr-index-set! state 0)))
 
 (define (InterpreterState-execute-ifjump state instr)
@@ -6326,7 +6562,7 @@
               (list "<<" t)
               (map (lambda (n) (string-append " " (obj->string-safe n))) names)
               '(">>"))))
-    (apply string-append elements)))
+    (string-concatenate elements)))
 
   (string->short-string
     (cond
