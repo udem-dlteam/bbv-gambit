@@ -367,7 +367,7 @@
                                #f ;; space for foreign pointer to ___module_struct
                                ))
                       (gvm-interpret-ctx
-                       (vector module-procs 0))) ;; max-branch-count
+                       (vector module-procs 0 0))) ;; max-label-count, max-branch-count
 
                  (if compiler-option-gvm-interpret
                      (gvm-interpret gvm-interpret-ctx))

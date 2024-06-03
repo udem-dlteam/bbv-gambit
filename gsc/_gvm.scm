@@ -440,7 +440,7 @@
 (define (bb-precedents bb)               (vector-ref bb 4))
 (define (bb-precedents-set! bb l)        (vector-set! bb 4 l))
 
-(define (bb-succesors bb)
+(define (bb-successors bb)
   (let ((branch (bb-branch-instr bb)))
     (case (gvm-instr-kind branch)
 
@@ -451,7 +451,7 @@
           (if (lbl? opnd) (list (lbl-num opnd)) '())))
       (else
         (compiler-internal-error
-          "bb-succesors, unknown branch kind")))))
+          "bb-successors, unknown branch kind")))))
 
 (define (bb-jump-return bb)
   (let ((branch (bb-branch-instr bb)))
@@ -4096,7 +4096,8 @@
   ;; For generating visual representation of control flow graph with "dot".
 
   (define procs (vector-ref gvm-interpret-ctx 0))
-  (define max-branch-count (vector-ref gvm-interpret-ctx 1))
+  (define max-label-count (vector-ref gvm-interpret-ctx 1))
+  (define max-branch-count (vector-ref gvm-interpret-ctx 2))
 
   (define dd (make-dot-digraph (proc-obj-name (car procs))))
 
@@ -4126,15 +4127,45 @@
       node-info-default-bgcolor))
 
   (let ((bbs-tbl (make-table 'test: eq?))
-        (proc-tbl (make-table)))
+        (proc-tbl (make-table))
+        (file-tbl (make-table)))
+
+    (define (locat-start-pos locat)
+      (vector-ref locat 1))
+
+    (define (linecol filepos)
+      (let* ((line (+ (##filepos-line filepos) 1))
+             (col (+ (##filepos-col filepos) 1)))
+        (vector line col)))
+
+    (define (locat->id locat)
+      (let ((prefix
+             (let* ((container
+                     (##locat-container locat))
+                    (path
+                     (##container->path container)))
+               (if path
+                   (or (table-ref file-tbl path #f)
+                       (let* ((i (+ 1 (table-length file-tbl)))
+                              (p (string-append "F" (number->string i))))
+                         (table-set! file-tbl path p)
+                         p))
+                   "")))
+            (lc
+             (linecol (##position->filepos (locat-start-pos locat)))))
+        (string-append prefix
+                       "L"
+                       (number->string (vector-ref lc 0))
+                       "C"
+                       (number->string (vector-ref lc 1)))))
 
     (define (proc-repr proc)
       (format-gvm-opnd (make-obj proc) '()))
 
     (define (bb-id bb-index proc-index)
-      (string-append "proc"
+      (string-append "P"
                      (number->string proc-index)
-                     "_"
+                     "B"
                      (number->string bb-index)))
 
     (define (dump-proc proc proc-index)
@@ -4164,7 +4195,8 @@
         (let ((id (bb-id (bb-lbl-num bb) proc-index))
               (port-count 0)
               (rev-rows '())
-              (branch-counters (get-branch-counters (bb-branch-instr bb))))
+              (label-count (vector-ref (get-label-counter bb) 0))
+              (branch-counters (get-branch-counters bb)))
 
           (define (add-row row)
             (set! rev-rows (cons row rev-rows)))
@@ -4205,8 +4237,12 @@
                 (dot-digraph-add-edge!
                  dd
                  (dot-digraph-gen-edge
+                  dd
                   (string-append id ":" from side)
                   targ-id
+                  (list "g_cfg"
+                        (string-append id "S")
+                        (string-append targ-id "D"))
                   width
                   color
                   label)))
@@ -4217,6 +4253,8 @@
                   (add-branch-edge-with-count from targ-bbs targ-lbl count)))
 
               (define (add-branch-edge-with-count from targ-bbs targ-lbl count)
+
+                (declare (generic))
 
                 (define (edge width color label)
                   (add-edge
@@ -4235,9 +4273,9 @@
                           (label
                            (number->string count)))
                       (cond ((<= count cbrt)
-                             (edge 3 "#9DC262" label)) ;; greenish
+                             (edge 3 "#E5AA70" label)) ;; yellowish
                             ((<= count (* cbrt cbrt))
-                             (edge 6 "#F8A804" label)) ;; yellowish
+                             (edge 6 "#FF5733" label)) ;; orangeish
                             (else
                              (edge 9 "#E40303" label)))) ;; redish
                     (edge 1 #f #f))) ;; black
@@ -4397,10 +4435,31 @@
                        (list (cons 'entry (format-gvm-obj proc #f)))
                        '())
                    (or (instr-comment-get (bb-label-instr bb) 'cfg-bb-info)
-                       '()))))
+                       '())))
+                 (locat-id-tbl
+                  (make-table))
+                 (locat-ids
+                  '()))
+            (for-each
+             (lambda (instr)
+               (let* ((node (instr-comment-get instr 'node))
+                      (src (node-source node))
+                      (locat (and src (source-locat src)))
+                      (locat-id (and locat (locat->id locat))))
+                 (if (and locat-id (not (table-ref locat-id-tbl locat-id #f)))
+                     (begin
+                       (table-set! locat-id-tbl locat-id #t)
+                       (set! locat-ids (cons locat-id locat-ids))))))
+             gvm-instrs)
+            (set! locat-ids (reverse locat-ids))
             (dot-digraph-add-node!
              dd
              (dot-digraph-gen-node
+              dd
+              (append (list "g_cfg"
+                            id
+                            (string-append "C" (number->string label-count)))
+                      locat-ids)
               id
               (dot-digraph-gen-html-label
                (dot-digraph-gen-table
@@ -4483,7 +4542,7 @@
               (dump-proc proc i)
               (loop2 (+ i 1) (cdr lst)))))
 
-      (dot-digraph-write dd port))))
+      (dot-digraph-write dd '("g_cfg") port))))
 
 (define (virtual.dump-dg name dependency-graph port)
 
@@ -4525,6 +4584,8 @@
                   (dot-digraph-add-edge!
                    dd
                    (dot-digraph-gen-edge
+                    dd
+                    #f
                     (gen-label referrer)
                     (gen-label var)
                     (if jump? 1 0) ;; solid or dotted line
@@ -4542,6 +4603,8 @@
              (dot-digraph-add-node!
               dd
               (dot-digraph-gen-node
+               dd
+               '("g_dg")
                (gen-label referrer)
                (list (gen-label referrer))))
 
@@ -4556,6 +4619,8 @@
        (dot-digraph-add-node!
         dd
         (dot-digraph-gen-node
+         dd
+         '("g_dg")
          (gen-label var)
          (dot-digraph-gen-html-label
           (dot-digraph-gen-table
@@ -4573,7 +4638,7 @@
                " "))))))))))
    (sort-syms not-defined))
 
-  (dot-digraph-write dd port))
+  (dot-digraph-write dd '("g_dg") port))
 
 (define (reachable-procs procs)
   (let ((proc-seen (queue-empty))
@@ -4675,34 +4740,54 @@
    `(,@edge
      ,@(dot-digraph-edges dd))))
 
-(define (dot-digraph-gen-digraph dd)
+(define (dot-digraph-gen-digraph dd classes)
   `("digraph \"" ,(dot-digraph-name dd) "\" {\n"
-    "  graph [splines = true overlap = false rankdir = \"TD\"];\n"
+    "  graph ["
+    "splines = true overlap = false rankdir = \"TD\""
+    ,@(if (pair? classes)
+          `(" class = \""
+            ,(string-concatenate classes " ")
+            "\"")
+          '())
+    "];\n"
     "  node [fontname = \"" ,dot-digraph-font-default "\" shape = \"none\"];\n"
     ,@(dot-digraph-nodes dd)
     ,@(dot-digraph-edges dd)
     "}\n"))
 
-(define (dot-digraph-gen-edge from to width color label)
-  `("  " ,from " -> " ,to
-    ,@(if (and (= width 1) (not color) (not label))
+(define (dot-digraph-gen-edge dd src dest classes width color label)
+  `("  " ,src " -> " ,dest
+    ,@(if (and (not classes) (= width 1) (not color) (not label))
           '()
           `(" ["
-            ,@(if label `("headlabel=\"" ,label "\" labelfontsize=" ,(number->string (* 4 (max 3 width)))) '())
+            ,@(if label
+                  `(" headlabel=\"" ,label "\""
+                    " labelfontsize=" ,(number->string (* 4 (max 3 width))))
+                  '())
             ,@(if (= width 1)
                   '()
                   (if (< width 1)
-                      `(" style=dotted")
+                      `(" style=dashed")
                       `(" style=\"setlinewidth(" ,(number->string width) ")\"")))
             ,@(if (not color)
                   '()
                   `(" color=\"" ,color "\""))
+            ,@(if (pair? classes)
+                  `(" class=\""
+                    ,(string-concatenate classes " ")
+                    "\"")
+                  '())
             "]"))
     ";\n"))
 
-(define (dot-digraph-gen-node id label)
-  `("  " ,id " [label = "
+(define (dot-digraph-gen-node dd classes id label)
+  `("  " ,id " [shape = plain label = "
     ,@label
+    ,@(if (pair? classes)
+          `(" class = \""
+            ,(string-concatenate classes " ")
+            "\"")
+          '())
     "];\n"))
 
 (define (dot-digraph-gen-table id bgcolor content)
@@ -4782,19 +4867,39 @@
     ">"))
 
 (define (dot-digraph-gen-html-escape str)
-  (string-concatenate
-   (map (lambda (c)
-          (cond ((char=? c #\<) "&lt;")
-                ((char=? c #\>) "&gt;")
-                ((char=? c #\&) "&amp;")
-                (else           (string c))))
-        (string->list (format-concatenate str)))))
 
-(define (dot-digraph-write dd port)
+  (define (blank n parts)
+    (if (> n 0)
+        (cons (string-append "<font>"
+                             (make-string n #\space)
+                             "</font>")
+              parts)
+        parts))
+
+  (let loop ((lst (reverse (string->list (format-concatenate str))))
+             (spaces 0)
+             (parts '()))
+    (if (pair? lst)
+        (let ((c (car lst)))
+          (if (char=? c #\space)
+              (loop (cdr lst)
+                    (+ spaces 1)
+                    parts)
+              (let ((part
+                     (cond ((char=? c #\<) "&lt;")
+                           ((char=? c #\>) "&gt;")
+                           ((char=? c #\&) "&amp;")
+                           (else           (string c)))))
+                (loop (cdr lst)
+                      0
+                      (cons part (blank spaces parts))))))
+        (string-concatenate (blank spaces parts)))))
+
+(define (dot-digraph-write dd classes port)
   (for-each
    (lambda (str)
      (display str port))
-   (dot-digraph-gen-digraph dd)))
+   (dot-digraph-gen-digraph dd classes)))
 
 (define dot-digraph-gray60 "gray60")
 (define dot-digraph-gray70 "gray70")
@@ -5640,25 +5745,44 @@
 (define (mark-exit-jump state)
   (instr-comment-add! (InterpreterState-current-instruction state) 'exit-jump #t))
 
+(define (increment-label-counter state bb)
+  (let* ((counter
+          (get-label-counter bb))
+         (count
+          (+ 1 (vector-ref counter 0))))
+    (vector-set! counter 0 count)
+    (let ((ctx (InterpreterState-ctx state)))
+      (if (> count (vector-ref ctx 1))
+          (vector-set! ctx 1 count)))))
+
+(define (get-label-counter bb)
+  (let ((label-instr (bb-label-instr bb)))
+    (or (instr-comment-get label-instr 'label-counter)
+        (let ((c (vector 0)))
+          (instr-comment-add! label-instr 'label-counter c)
+          c))))
+
 (define (increment-branch-counter state target-bbs target-bb)
   (let* ((branch-instr
           (InterpreterState-current-instruction state))
          (table1
-          (get-branch-counters branch-instr))
+          (get-branch-counters-from-branch-instr branch-instr))
          (table2
           (or (table-ref table1 target-bbs #f)
               (let ((t (make-table)))
                 (table-set! table1 target-bbs t)
                 t)))
          (count
-          (+ 1 (table-ref table2 (bb-lbl-num target-bb) 0)))
-         (ctx
-          (InterpreterState-ctx state)))
-    (if (> count (vector-ref ctx 1))
-        (vector-set! ctx 1 count))
-    (table-set! table2 (bb-lbl-num target-bb) count)))
+          (+ 1 (table-ref table2 (bb-lbl-num target-bb) 0))))
+    (table-set! table2 (bb-lbl-num target-bb) count)
+    (let ((ctx (InterpreterState-ctx state)))
+      (if (> count (vector-ref ctx 2))
+          (vector-set! ctx 2 count)))))
 
-(define (get-branch-counters branch-instr)
+(define (get-branch-counters bb)
+  (get-branch-counters-from-branch-instr (bb-branch-instr bb)))
+
+(define (get-branch-counters-from-branch-instr branch-instr)
   (or (instr-comment-get branch-instr 'branch-counter)
       (let ((t (make-table 'test: eq?)))
         (instr-comment-add! branch-instr 'branch-counter t)
@@ -5978,8 +6102,7 @@
   assert-types?
   (primitive-counter unprintable:)
   (bbs-names unprintable:)
-  (bb-execution-count unprintable:)
-  ctx)
+   ctx)
 
 (define (InterpreterState-stack state) (RTE-stack (InterpreterState-rte state)))
 
@@ -6019,7 +6142,6 @@
             #f                                       ;; assert-types?
             (make-table)                             ;; primitive counter
             (make-table test: eq? weak-keys: #t)     ;; bbs-names
-            (make-table test: eq?)                   ;; bb-execution-count
             gvm-interpret-ctx))                      ;; ctx
          (rte (InterpreterState-rte state)))
     ;; connect RTE to the state
@@ -6080,21 +6202,7 @@
     (error 1)))
 
 (define (InterpreterState-increment-bb-execution-count! state)
-  (define bbs (InterpreterState-bbs state))
-  (define bb (InterpreterState-bb state))
-  (define bb-execution-count (InterpreterState-bb-execution-count state))
-  (define bbs-count
-    (begin
-      (if (not (table-ref bb-execution-count bbs #f))
-        (table-set! bb-execution-count bbs (make-table test: eq?)))
-      (table-ref bb-execution-count bbs)))
-
-  (table-set! bbs-count bb (+ (table-ref bbs-count bb 0) 1)))
-
-(define (InterpreterState-get-bb-execution-count state bbs bb)
-  (define bb-execution-count (InterpreterState-bb-execution-count state))
-  (define bbs-count (table-ref bb-execution-count bbs #f))
-  (if (not bbs-count) 0 (table-ref bbs-count bb 0)))
+  (increment-label-counter state (InterpreterState-bb state)))
 
 (define (InterpreterState-instr-index-increment! state last-instr)
   ;; increment index if instruction is not a jump
@@ -6174,10 +6282,10 @@
           origin: (or (instr-comment-get (bb-label-instr bb) 'orig-lbl) (error "no orig-lbl" bb))
           bbs: (object->string (InterpreterState-get-bbs-name state bbs))
           source: (object->string (object->string (source->expression (node-source (instr-comment-get (bb-label-instr bb) 'node)))))
-          usage: (InterpreterState-get-bb-execution-count state bbs bb)
+          usage: (get-label-counter bb)
           context: (object->string (format-concatenate (format-gvm-instr-frame (bb-label-instr bb) '())))
           predecessors: (map convert-lbl (bb-precedents bb))
-          successors: (map convert-lbl (bb-succesors bb))
+          successors: (map convert-lbl (bb-successors bb))
           references: (map convert-lbl (bb-references bb))
           ret: (map convert-lbl (bb-jump-return bb))
           jumps:
@@ -6190,7 +6298,7 @@
                       id: (convert-lbl (car bb-count) (car bbs-table))
                       count: (cdr bb-count)))
                   (table->list (cdr bbs-table))))
-              (table->list (get-branch-counters (bb-branch-instr bb))))
+              (table->list (get-branch-counters bb)))
           details: (object->string (call-with-output-string (lambda (port) (write-bb bb (list rename-lbl: convert-lbl) port)))))
         specialized-blocks)))
 
