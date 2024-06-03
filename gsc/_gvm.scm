@@ -2226,15 +2226,33 @@
       (context . ,(object->string context)))))
 
 (define (add-version-history-event*:merge bbs-name orig-lbl merged-lbls result-lbl context)
-  #f)
+  (list->table
+    `((event . merge)
+      (bbs . ,(object->string bbs-name))
+      (origin . ,orig-lbl)
+      (merged . ,merged-lbls)
+      (id . ,result-lbl)
+      (context . ,(object->string context)))))
+
 (define (add-version-history-event*:request bbs-name orig-lbl result-lbl)
   #f)
+
 (define (add-version-history-event*:replace bbs-name orig-lbl from-lbl to-lbl)
   #f)
+
 (define (add-version-history-event*:unreachable bbs-name orig-lbl lbl)
-  #f)
+  (list->table
+    `((event . unreachable)
+      (bbs . ,(object->string bbs-name))
+      (origin . ,orig-lbl)
+      (id . ,lbl))))
+
 (define (add-version-history-event*:reachable bbs-name orig-lbl lbl)
-  #f)
+  (list->table
+    `((event . reachable)
+      (bbs . ,(object->string bbs-name))
+      (origin . ,orig-lbl)
+      (id . ,lbl))))
 
 (define version-events-history '())
 
@@ -2724,6 +2742,7 @@
                         "walk-instr, unknown 'gvm-instr':" gvm-instr)))))
                 (gvm-instr-types-set! new-instr types-after)
                 (instr-comment-add! new-instr 'orig-lbl orig-lbl)
+                (instr-comment-add! new-instr 'new-lbl new-lbl)
                 new-instr))
 
             ((apply)
@@ -3169,11 +3188,11 @@
         (> (bb-versions-active-lbl-length bb-versions) (max 1 (bb-version-limit bb)))))
 
     (define (onrevive lbl)
+      (add-version-history-event reachable (orig-lbl-mapping-ref lbl) lbl)
       (if (new-lbl? lbl new-bbs)
           (let* ((orig-lbl (orig-lbl-mapping-ref lbl))
                   (bb (lbl-num->bb orig-lbl bbs))
                   (bb-versions (get-bb-versions-from-lbl orig-lbl)))
-            ;(pp (list 'onrevive lbl)) 
             (reachability-debug lbl 'revive)
             (bb-versions-active-lbl-add!
               bb-versions
@@ -3183,7 +3202,8 @@
 
     (define (onkill lbl)
       (let* ((orig-lbl (orig-lbl-mapping-ref lbl))
-              (bb-versions (get-bb-versions-from-lbl orig-lbl)))
+             (bb-versions (get-bb-versions-from-lbl orig-lbl)))
+        (add-version-history-event unreachable orig-lbl lbl)
         (reachability-debug lbl 'kill)
         (bb-versions-active-lbl-remove-unreachable! bb-versions)))
 
@@ -3207,6 +3227,13 @@
               (merged-types (if (not existing-lbl-of-merged-type)
                                 merged-types
                                 (get-version-types new-lbl))))
+
+        (add-version-history-event
+          merge
+          lbl
+          (map cdr versions-to-merge)
+          new-lbl
+          (frame->string (bb-entry-frame bb) merged-types))
 
         (bb-versions-active-lbl-add! bb-versions merged-types new-lbl)
 
@@ -5337,7 +5364,11 @@
            gvm-opnd))))
 
 (define (format-gvm-lbl lbl options)
-  (string-append (if (memq 'new options) "%" "#") (number->string lbl)))
+  (define rename
+    (let ((x (memq rename-lbl: options)))
+      (if x (cadr x) (lambda (l) l))))
+
+  (string-append (if (memq 'new options) "%" "#") (number->string (rename lbl))))
 
 (define (format-gvm-obj val quote?)
   (let ((str
@@ -6134,19 +6165,21 @@
   (define (collect-specialized-bb bb bbs)
     (define (flat-map . args)
       (apply append (apply map args)))
+    (define (convert-lbl lbl #!optional (bbs bbs))
+      (or (instr-comment-get (bb-label-instr (lbl-num->bb lbl bbs)) 'new-lbl) (error "no new-lbl" bb)))
     (set! specialized-blocks
       (cons
         (json
-          id: (bb-lbl-num bb)
+          id: (convert-lbl (bb-lbl-num bb))
           origin: (or (instr-comment-get (bb-label-instr bb) 'orig-lbl) (error "no orig-lbl" bb))
           bbs: (object->string (InterpreterState-get-bbs-name state bbs))
           source: (object->string (object->string (source->expression (node-source (instr-comment-get (bb-label-instr bb) 'node)))))
           usage: (InterpreterState-get-bb-execution-count state bbs bb)
           context: (object->string (format-concatenate (format-gvm-instr-frame (bb-label-instr bb) '())))
-          predecessors: (bb-precedents bb)
-          successors: (bb-succesors bb)
-          references: (bb-references bb)
-          ret: (bb-jump-return bb)
+          predecessors: (map convert-lbl (bb-precedents bb))
+          successors: (map convert-lbl (bb-succesors bb))
+          references: (map convert-lbl (bb-references bb))
+          ret: (map convert-lbl (bb-jump-return bb))
           jumps:
             (flat-map
               (lambda (bbs-table)
@@ -6154,11 +6187,11 @@
                   (lambda (bb-count)
                     (json
                       bbs: (object->string (InterpreterState-get-bbs-name state (car bbs-table)))
-                      id: (car bb-count)
+                      id: (convert-lbl (car bb-count) (car bbs-table))
                       count: (cdr bb-count)))
                   (table->list (cdr bbs-table))))
               (table->list (get-branch-counters (bb-branch-instr bb))))
-          details: (object->string (call-with-output-string (lambda (port) (write-bb bb '() port)))))
+          details: (object->string (call-with-output-string (lambda (port) (write-bb bb (list rename-lbl: convert-lbl) port)))))
         specialized-blocks)))
 
   (for-each
