@@ -3285,8 +3285,10 @@
           (reachability-debug version-lbl 'dequeued)
 
           (when (reachable? version-lbl)
-            (if (need-merge? bb) (merge bb))
-            (walk-bb bb types version-lbl))
+            (if (need-merge? bb)
+                (merge bb))
+            (if (reachable? version-lbl)
+                (walk-bb bb types version-lbl)))
           
           (if (not (queue-empty? work-queue)) (loop))))
 
