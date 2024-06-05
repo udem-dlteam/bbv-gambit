@@ -110,6 +110,9 @@
                      ((gvm-interpret)
                       (set! compiler-option-gvm-interpret      #t)
                       #t)
+                     ((bbv-json-trace)
+                      (set! compiler-option-bbv-json-trace      #t)
+                      #t)
                      ((dg)
                       (set! compiler-option-dg                 #t)
                       #t)
@@ -163,6 +166,7 @@
   (set! compiler-option-gvm                #f)
   (set! compiler-option-cfg                #f)
   (set! compiler-option-gvm-interpret      #f)
+  (set! compiler-option-bbv-json-trace     #f)
   (set! compiler-options-bbv-merge-strategy #f)
   (set! compiler-option-dg                 #f)
   (set! compiler-option-debug              #f)
@@ -178,6 +182,7 @@
 (define compiler-option-gvm                #f)
 (define compiler-option-cfg                #f)
 (define compiler-option-gvm-interpret      #f)
+(define compiler-option-bbv-json-trace     #f)
 (define compiler-options-bbv-merge-strategy #f)
 (define compiler-option-dg                 #f)
 (define compiler-option-debug              #f)
@@ -342,7 +347,7 @@
 
                (let ((opt (assq 'bbv-merge-strategy opts)))
                  (set-bbv-merge-strategy! (and opt (cadr opt))))
-               (if compiler-option-gvm-interpret (track-version-history-for-visualization-tool?-set! #t))
+               (if compiler-option-bbv-json-trace (track-version-history-for-visualization-tool?-set! #t))
 
                (let* ((meta-info
                        (**meta-info->alist

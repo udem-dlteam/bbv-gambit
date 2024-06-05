@@ -70,6 +70,7 @@ Auxiliary information options
     -cfg             Write GVM control flow graph to file.cfg
     -dg              Write variable/procedure dependency graph to file.dg
     -gvm-interpret   Execute CFG with gvm interpreter
+    -bbv-json-trace  Dump a json file tracing the SBBV algorithm
     -expansion       Show source code after code transformations
     -report          Show global variable usage report
     -verbose         Show trace of compiler activity
@@ -1009,7 +1010,7 @@ usage-end
                            (pkg-config string)
                            (pkg-config-path string)
                            ;; bbv options
-                           (gvm-interpret) (bbv-merge-strategy symbol))))
+                           (gvm-interpret) (bbv-json-trace) (bbv-merge-strategy symbol))))
 
                    ;; parse command line to try to find the -target option
                    (split-command-line

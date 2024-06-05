@@ -6073,7 +6073,8 @@
       (let ((state (init-interpreter-state gvm-interpret-ctx)))
         (InterpreterState-execution-loop state)
         (InterpreterState-primitive-counter-trace state)
-        (InterpreterState-bb-execution-count-trace state gvm-interpret-ctx)))))
+        (if track-version-history-for-visualization-tool?
+            (InterpreterState-bb-execution-count-trace state gvm-interpret-ctx))))))
 
 (define (InterpreterState-execution-loop state)
   (let loop ()
