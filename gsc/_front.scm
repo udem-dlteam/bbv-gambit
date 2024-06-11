@@ -110,6 +110,9 @@
                      ((gvm-interpret)
                       (set! compiler-option-gvm-interpret      #t)
                       #t)
+                     ((bbv-json-trace)
+                      (set! compiler-option-bbv-json-trace      #t)
+                      #t)
                      ((dg)
                       (set! compiler-option-dg                 #t)
                       #t)
@@ -163,6 +166,7 @@
   (set! compiler-option-gvm                #f)
   (set! compiler-option-cfg                #f)
   (set! compiler-option-gvm-interpret      #f)
+  (set! compiler-option-bbv-json-trace     #f)
   (set! compiler-options-bbv-merge-strategy #f)
   (set! compiler-option-dg                 #f)
   (set! compiler-option-debug              #f)
@@ -178,6 +182,7 @@
 (define compiler-option-gvm                #f)
 (define compiler-option-cfg                #f)
 (define compiler-option-gvm-interpret      #f)
+(define compiler-option-bbv-json-trace     #f)
 (define compiler-options-bbv-merge-strategy #f)
 (define compiler-option-dg                 #f)
 (define compiler-option-debug              #f)
@@ -342,6 +347,7 @@
 
                (let ((opt (assq 'bbv-merge-strategy opts)))
                  (set-bbv-merge-strategy! (and opt (cadr opt))))
+               (if compiler-option-bbv-json-trace (track-version-history-for-visualization-tool?-set! #t))
 
                (let* ((meta-info
                        (**meta-info->alist
@@ -366,7 +372,7 @@
                                #f ;; space for foreign pointer to ___module_struct
                                ))
                       (gvm-interpret-ctx
-                       (vector module-procs 0))) ;; max-branch-count
+                       (vector module-procs 0 0))) ;; max-label-count, max-branch-count
 
                  (if compiler-option-gvm-interpret
                      (gvm-interpret gvm-interpret-ctx))
@@ -879,7 +885,7 @@
             (newline info-port)
             (newline info-port)))
 
-      (proc-obj-code-set! main-proc (bbs-purify *bbs*))
+      (proc-obj-code-set! main-proc (bbs-purify *bbs* main-proc))
 
       (set! *bb* '())
       (set! *bbs* '())
@@ -1105,7 +1111,7 @@
                                       (do-body)))
                   (do-body))
 
-              (proc-obj-code-set! proc (bbs-purify *bbs*))
+              (proc-obj-code-set! proc (bbs-purify *bbs* proc))
 
               (set! proc-queue p-proc-queue)
               (set! known-procs p-known-procs)

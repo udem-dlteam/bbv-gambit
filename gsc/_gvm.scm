@@ -440,8 +440,33 @@
 (define (bb-precedents bb)               (vector-ref bb 4))
 (define (bb-precedents-set! bb l)        (vector-set! bb 4 l))
 
+(define (bb-successors bb)
+  (let ((branch (bb-branch-instr bb)))
+    (case (gvm-instr-kind branch)
+
+      ((ifjump)
+        (list (ifjump-true branch) (ifjump-false branch)))
+      ((jump)
+        (let ((opnd (jump-opnd branch)))
+          (if (lbl? opnd) (list (lbl-num opnd)) '())))
+      (else
+        (compiler-internal-error
+          "bb-successors, unknown branch kind")))))
+
+(define (bb-jump-return bb)
+  (let ((branch (bb-branch-instr bb)))
+    (case (gvm-instr-kind branch)
+      ((jump)
+        (let ((ret (jump-ret branch)))
+          (if ret (list ret) '())))
+      (else
+        '()))))
+
+(define (bb-entry-frame bb)
+  (gvm-instr-frame (bb-label-instr bb)))
+
 (define (bb-entry-frame-size bb)
-  (frame-size (gvm-instr-frame (bb-label-instr bb))))
+  (frame-size (bb-entry-frame bb)))
 
 (define (bb-entry-nb-params bb)
   (let ((lbl (bb-label-instr bb)))
@@ -855,7 +880,7 @@
 ;; through the process.  The first basic block of a 'purified' basic block set
 ;; is always the entry point.
 
-(define (bbs-purify bbs)
+(define (bbs-purify bbs proc)
   (define optim? #t)
   (define (purify-step bbs0)
     (let* ((bbs1 (bbs-remove-jump-cascades bbs0))
@@ -864,7 +889,7 @@
            (bbs4 (bbs-remove-useless-jumps bbs3)))
       (cons bbs2 bbs4)))
 
-  (let loop ((bbs0 (bbs-type-specialize (if (not optim?) bbs (cdr (purify-step bbs))))))
+  (let loop ((bbs0 (bbs-type-specialize (if (not optim?) bbs (cdr (purify-step bbs))) proc)))
     (if (not optim?) (begin (bbs-determine-refs! bbs0) (bbs-order bbs0))
     (let* ((bbs1-bbs2 (purify-step bbs0))
            (bbs1 (car bbs1-bbs2))
@@ -960,7 +985,11 @@
                           (make-label-simple
                            lbl2
                            (gvm-instr-frame last-jump/ret)
-                           (gvm-instr-comment last-jump/ret)))
+                           (gvm-instr-comment
+                              (bb-label-instr
+                                (stretchable-vector-ref
+                                  (bbs-basic-blocks bbs)
+                                  (lbl-num (jump-opnd last-jump/ret)))))))
                          new-bbs)))
                   (bb-branch-instr-set!
                    new-bb
@@ -2178,11 +2207,65 @@
 
 (define debug-bbv? #f)
 (define track-version-history? #f)
+(define track-version-history-for-visualization-tool? #f)
+
+(define track-version-history-counter 0)
+(define (track-version-history-for-visualization-tool?-set! x)
+  (set! track-version-history-for-visualization-tool? x))
+
+(define-macro (add-version-history-event event-name . args)
+  (let ((event-creator (string->symbol (string-append "add-version-history-event*:" (symbol->string event-name)))))
+    `(if track-version-history-for-visualization-tool? (add-version-history-event* (,event-creator bbs-proc-name ,@args)))))
+
+(define (add-version-history-event*:create bbs-name orig-lbl id context)
+  (list->table
+    `((event . create)
+      (bbs . ,(object->string bbs-name))
+      (origin . ,orig-lbl)
+      (id . ,id)
+      (context . ,(object->string context)))))
+
+(define (add-version-history-event*:merge bbs-name orig-lbl merged-lbls result-lbl context)
+  (list->table
+    `((event . merge)
+      (bbs . ,(object->string bbs-name))
+      (origin . ,orig-lbl)
+      (merged . ,merged-lbls)
+      (id . ,result-lbl)
+      (context . ,(object->string context)))))
+
+(define (add-version-history-event*:request bbs-name orig-lbl result-lbl)
+  #f)
+
+(define (add-version-history-event*:replace bbs-name orig-lbl from-lbl to-lbl)
+  #f)
+
+(define (add-version-history-event*:unreachable bbs-name orig-lbl lbl)
+  (list->table
+    `((event . unreachable)
+      (bbs . ,(object->string bbs-name))
+      (origin . ,orig-lbl)
+      (id . ,lbl))))
+
+(define (add-version-history-event*:reachable bbs-name orig-lbl lbl)
+  (list->table
+    `((event . reachable)
+      (bbs . ,(object->string bbs-name))
+      (origin . ,orig-lbl)
+      (id . ,lbl))))
+
+(define version-events-history '())
+
+(define (add-version-history-event* event)
+  (set! version-events-history (cons event version-events-history)))
+
+(define (get-version-events-history)
+  (reverse version-events-history))
 
 (define instr-cost 1)
 (define call-cost 100)
 
-(define (bbs-type-specialize bbs)
+(define (bbs-type-specialize bbs proc)
 
   (define (any-bb-has-version-limit-above-0?)
     (let ((has-version-limit-above-0? #f))
@@ -2196,7 +2279,7 @@
       has-version-limit-above-0?))
 
   (if (any-bb-has-version-limit-above-0?)
-      (bbs-type-specialize* bbs) ;; create a specialized bbs
+      (bbs-type-specialize* bbs proc) ;; create a specialized bbs
       bbs)) ;; leave bbs intact
 
 (define (bb-version-limit bb)
@@ -2208,7 +2291,8 @@
   #t #;
   (and (>= lbl 52) (<= lbl 52))) ;; filter these labels
 
-(define (bbs-type-specialize* bbs)
+(define (bbs-type-specialize* bbs bbs-proc)
+  (define bbs-proc-name (proc-obj-name bbs-proc))
 
   (define-macro (reachability-debug lbl . rest)
     (define reachability-debug-lbls '())
@@ -2233,6 +2317,9 @@
 
   (define versions (make-table))
   (define lbl-mapping (make-table))
+
+  (define (types->json-format bb specialized-lbl types)
+    (object->string (format-concatenate (format-frame (gvm-instr-frame (bb-label-instr bb)) types 'combined '()))))
 
   (define (replacement-lbl-num lbl)
     (let ((x (table-ref lbl-mapping lbl #f)))
@@ -2512,12 +2599,17 @@
               (version-is-live?
                 (and most-recent-version
                     (bb-versions-active-lbl-get bb-versions version-types))))
+
+
         (if version-is-live?
             (begin
               (reachability-debug most-recent-version 'reaching 'live)
               (if from-lbl (add-edge! BFSTree from-lbl most-recent-version onrevive))
               most-recent-version)
             (let* ((new-lbl (or most-recent-version (new-lbl! lbl))))
+              (if (not most-recent-version)
+                  (add-version-history-event create lbl new-lbl
+                    (frame->string (bb-entry-frame bb) version-types)))
               (bb-versions-active-lbl-add! bb-versions version-types new-lbl)
               (queue-put! work-queue (make-queue-task bb new-lbl))
               (track-version-history lbl (list 'add from-lbl)) ;; track history of versions
@@ -2654,6 +2746,7 @@
                         "walk-instr, unknown 'gvm-instr':" gvm-instr)))))
                 (gvm-instr-types-set! new-instr types-after)
                 (instr-comment-add! new-instr 'orig-lbl orig-lbl)
+                (instr-comment-add! new-instr 'new-lbl new-lbl)
                 new-instr))
 
             ((apply)
@@ -3099,19 +3192,6 @@
         (> (bb-versions-active-lbl-length bb-versions) (max 1 (bb-version-limit bb)))))
 
     (define (onrevive lbl)
-<<<<<<< Updated upstream
-      (if (new-lbl? lbl new-bbs)
-          (let* ((orig-lbl (orig-lbl-mapping-ref lbl))
-                  (bb (lbl-num->bb orig-lbl bbs))
-                  (bb-versions (get-bb-versions-from-lbl orig-lbl)))
-            ;(pp (list 'onrevive lbl)) 
-            (reachability-debug lbl 'revive)
-            (bb-versions-active-lbl-add!
-              bb-versions
-              (get-version-types lbl)
-              lbl)
-            (queue-put! work-queue (make-queue-task bb lbl)))))
-=======
       (add-version-history-event reachable (orig-lbl-mapping-ref lbl) lbl)
       (let* ((orig-lbl (orig-lbl-mapping-ref lbl))
               (bb (lbl-num->bb orig-lbl bbs))
@@ -3122,12 +3202,11 @@
           (get-version-types lbl)
           lbl)
         (queue-put! work-queue (make-queue-task bb lbl))))
->>>>>>> Stashed changes
 
     (define (onkill lbl)
       (let* ((orig-lbl (orig-lbl-mapping-ref lbl))
-              (bb-versions (get-bb-versions-from-lbl orig-lbl)))
-        ;(pp (list 'onkill lbl)) 
+             (bb-versions (get-bb-versions-from-lbl orig-lbl)))
+        (add-version-history-event unreachable orig-lbl lbl)
         (reachability-debug lbl 'kill)
         (bb-versions-active-lbl-remove-unreachable! bb-versions)))
 
@@ -3142,6 +3221,7 @@
               (versions-to-merge (map (lambda (i) (vector-ref types-lbl-vect i)) in))
               (versions-to-keep (map (lambda (i) (vector-ref types-lbl-vect i)) out))
               (merged-types (types-merge-multi (map car versions-to-merge) #t))
+              (merged-types-before-replacement merged-types)
               (existing-lbl-of-merged-type 
                 (bb-versions-all-lbl-get bb-versions merged-types))
               (new-lbl (or (and existing-lbl-of-merged-type
@@ -3150,6 +3230,13 @@
               (merged-types (if (not existing-lbl-of-merged-type)
                                 merged-types
                                 (get-version-types new-lbl))))
+
+        (add-version-history-event
+          merge
+          lbl
+          (map cdr versions-to-merge)
+          new-lbl
+          (frame->string (bb-entry-frame bb) merged-types))
 
         (bb-versions-active-lbl-add! bb-versions merged-types new-lbl)
 
@@ -3201,15 +3288,10 @@
           (reachability-debug version-lbl 'dequeued)
 
           (when (reachable? version-lbl)
-<<<<<<< Updated upstream
-            (if (need-merge? bb) (merge bb))
-            (walk-bb bb types version-lbl))
-=======
             (if (need-merge? bb)
                 (merge bb))
             (if (and (reachable? version-lbl) (new-lbl? version-lbl new-bbs))
                 (walk-bb bb types version-lbl)))
->>>>>>> Stashed changes
           
           (if (not (queue-empty? work-queue)) (loop))))
 
@@ -4019,7 +4101,8 @@
   ;; For generating visual representation of control flow graph with "dot".
 
   (define procs (vector-ref gvm-interpret-ctx 0))
-  (define max-branch-count (vector-ref gvm-interpret-ctx 1))
+  (define max-label-count (vector-ref gvm-interpret-ctx 1))
+  (define max-branch-count (vector-ref gvm-interpret-ctx 2))
 
   (define dd (make-dot-digraph (proc-obj-name (car procs))))
 
@@ -4049,15 +4132,45 @@
       node-info-default-bgcolor))
 
   (let ((bbs-tbl (make-table 'test: eq?))
-        (proc-tbl (make-table)))
+        (proc-tbl (make-table))
+        (file-tbl (make-table)))
+
+    (define (locat-start-pos locat)
+      (vector-ref locat 1))
+
+    (define (linecol filepos)
+      (let* ((line (+ (##filepos-line filepos) 1))
+             (col (+ (##filepos-col filepos) 1)))
+        (vector line col)))
+
+    (define (locat->id locat)
+      (let ((prefix
+             (let* ((container
+                     (##locat-container locat))
+                    (path
+                     (##container->path container)))
+               (if path
+                   (or (table-ref file-tbl path #f)
+                       (let* ((i (+ 1 (table-length file-tbl)))
+                              (p (string-append "F" (number->string i))))
+                         (table-set! file-tbl path p)
+                         p))
+                   "")))
+            (lc
+             (linecol (##position->filepos (locat-start-pos locat)))))
+        (string-append prefix
+                       "L"
+                       (number->string (vector-ref lc 0))
+                       "C"
+                       (number->string (vector-ref lc 1)))))
 
     (define (proc-repr proc)
       (format-gvm-opnd (make-obj proc) '()))
 
     (define (bb-id bb-index proc-index)
-      (string-append "proc"
+      (string-append "P"
                      (number->string proc-index)
-                     "_"
+                     "B"
                      (number->string bb-index)))
 
     (define (dump-proc proc proc-index)
@@ -4087,7 +4200,8 @@
         (let ((id (bb-id (bb-lbl-num bb) proc-index))
               (port-count 0)
               (rev-rows '())
-              (branch-counters (get-branch-counters (bb-branch-instr bb))))
+              (label-count (vector-ref (get-label-counter bb) 0))
+              (branch-counters (get-branch-counters bb)))
 
           (define (add-row row)
             (set! rev-rows (cons row rev-rows)))
@@ -4128,8 +4242,12 @@
                 (dot-digraph-add-edge!
                  dd
                  (dot-digraph-gen-edge
+                  dd
                   (string-append id ":" from side)
                   targ-id
+                  (list "g_cfg"
+                        (string-append id "S")
+                        (string-append targ-id "D"))
                   width
                   color
                   label)))
@@ -4140,6 +4258,8 @@
                   (add-branch-edge-with-count from targ-bbs targ-lbl count)))
 
               (define (add-branch-edge-with-count from targ-bbs targ-lbl count)
+
+                (declare (generic))
 
                 (define (edge width color label)
                   (add-edge
@@ -4158,9 +4278,9 @@
                           (label
                            (number->string count)))
                       (cond ((<= count cbrt)
-                             (edge 3 "#9DC262" label)) ;; greenish
+                             (edge 3 "#E5AA70" label)) ;; yellowish
                             ((<= count (* cbrt cbrt))
-                             (edge 6 "#F8A804" label)) ;; yellowish
+                             (edge 6 "#FF5733" label)) ;; orangeish
                             (else
                              (edge 9 "#E40303" label)))) ;; redish
                     (edge 1 #f #f))) ;; black
@@ -4320,10 +4440,31 @@
                        (list (cons 'entry (format-gvm-obj proc #f)))
                        '())
                    (or (instr-comment-get (bb-label-instr bb) 'cfg-bb-info)
-                       '()))))
+                       '())))
+                 (locat-id-tbl
+                  (make-table))
+                 (locat-ids
+                  '()))
+            (for-each
+             (lambda (instr)
+               (let* ((node (instr-comment-get instr 'node))
+                      (src (node-source node))
+                      (locat (and src (source-locat src)))
+                      (locat-id (and locat (locat->id locat))))
+                 (if (and locat-id (not (table-ref locat-id-tbl locat-id #f)))
+                     (begin
+                       (table-set! locat-id-tbl locat-id #t)
+                       (set! locat-ids (cons locat-id locat-ids))))))
+             gvm-instrs)
+            (set! locat-ids (reverse locat-ids))
             (dot-digraph-add-node!
              dd
              (dot-digraph-gen-node
+              dd
+              (append (list "g_cfg"
+                            id
+                            (string-append "C" (number->string label-count)))
+                      locat-ids)
               id
               (dot-digraph-gen-html-label
                (dot-digraph-gen-table
@@ -4406,7 +4547,7 @@
               (dump-proc proc i)
               (loop2 (+ i 1) (cdr lst)))))
 
-      (dot-digraph-write dd port))))
+      (dot-digraph-write dd '("g_cfg") port))))
 
 (define (virtual.dump-dg name dependency-graph port)
 
@@ -4448,6 +4589,8 @@
                   (dot-digraph-add-edge!
                    dd
                    (dot-digraph-gen-edge
+                    dd
+                    #f
                     (gen-label referrer)
                     (gen-label var)
                     (if jump? 1 0) ;; solid or dotted line
@@ -4465,6 +4608,8 @@
              (dot-digraph-add-node!
               dd
               (dot-digraph-gen-node
+               dd
+               '("g_dg")
                (gen-label referrer)
                (list (gen-label referrer))))
 
@@ -4479,6 +4624,8 @@
        (dot-digraph-add-node!
         dd
         (dot-digraph-gen-node
+         dd
+         '("g_dg")
          (gen-label var)
          (dot-digraph-gen-html-label
           (dot-digraph-gen-table
@@ -4496,7 +4643,7 @@
                " "))))))))))
    (sort-syms not-defined))
 
-  (dot-digraph-write dd port))
+  (dot-digraph-write dd '("g_dg") port))
 
 (define (reachable-procs procs)
   (let ((proc-seen (queue-empty))
@@ -4598,34 +4745,54 @@
    `(,@edge
      ,@(dot-digraph-edges dd))))
 
-(define (dot-digraph-gen-digraph dd)
+(define (dot-digraph-gen-digraph dd classes)
   `("digraph \"" ,(dot-digraph-name dd) "\" {\n"
-    "  graph [splines = true overlap = false rankdir = \"TD\"];\n"
+    "  graph ["
+    "splines = true overlap = false rankdir = \"TD\""
+    ,@(if (pair? classes)
+          `(" class = \""
+            ,(string-concatenate classes " ")
+            "\"")
+          '())
+    "];\n"
     "  node [fontname = \"" ,dot-digraph-font-default "\" shape = \"none\"];\n"
     ,@(dot-digraph-nodes dd)
     ,@(dot-digraph-edges dd)
     "}\n"))
 
-(define (dot-digraph-gen-edge from to width color label)
-  `("  " ,from " -> " ,to
-    ,@(if (and (= width 1) (not color) (not label))
+(define (dot-digraph-gen-edge dd src dest classes width color label)
+  `("  " ,src " -> " ,dest
+    ,@(if (and (not classes) (= width 1) (not color) (not label))
           '()
           `(" ["
-            ,@(if label `("headlabel=\"" ,label "\" labelfontsize=" ,(number->string (* 4 (max 3 width)))) '())
+            ,@(if label
+                  `(" headlabel=\"" ,label "\""
+                    " labelfontsize=" ,(number->string (* 4 (max 3 width))))
+                  '())
             ,@(if (= width 1)
                   '()
                   (if (< width 1)
-                      `(" style=dotted")
+                      `(" style=dashed")
                       `(" style=\"setlinewidth(" ,(number->string width) ")\"")))
             ,@(if (not color)
                   '()
                   `(" color=\"" ,color "\""))
+            ,@(if (pair? classes)
+                  `(" class=\""
+                    ,(string-concatenate classes " ")
+                    "\"")
+                  '())
             "]"))
     ";\n"))
 
-(define (dot-digraph-gen-node id label)
-  `("  " ,id " [label = "
+(define (dot-digraph-gen-node dd classes id label)
+  `("  " ,id " [shape = plain label = "
     ,@label
+    ,@(if (pair? classes)
+          `(" class = \""
+            ,(string-concatenate classes " ")
+            "\"")
+          '())
     "];\n"))
 
 (define (dot-digraph-gen-table id bgcolor content)
@@ -4705,19 +4872,39 @@
     ">"))
 
 (define (dot-digraph-gen-html-escape str)
-  (string-concatenate
-   (map (lambda (c)
-          (cond ((char=? c #\<) "&lt;")
-                ((char=? c #\>) "&gt;")
-                ((char=? c #\&) "&amp;")
-                (else           (string c))))
-        (string->list (format-concatenate str)))))
 
-(define (dot-digraph-write dd port)
+  (define (blank n parts)
+    (if (> n 0)
+        (cons (string-append "<font>"
+                             (make-string n #\space)
+                             "</font>")
+              parts)
+        parts))
+
+  (let loop ((lst (reverse (string->list (format-concatenate str))))
+             (spaces 0)
+             (parts '()))
+    (if (pair? lst)
+        (let ((c (car lst)))
+          (if (char=? c #\space)
+              (loop (cdr lst)
+                    (+ spaces 1)
+                    parts)
+              (let ((part
+                     (cond ((char=? c #\<) "&lt;")
+                           ((char=? c #\>) "&gt;")
+                           ((char=? c #\&) "&amp;")
+                           (else           (string c)))))
+                (loop (cdr lst)
+                      0
+                      (cons part (blank spaces parts))))))
+        (string-concatenate (blank spaces parts)))))
+
+(define (dot-digraph-write dd classes port)
   (for-each
    (lambda (str)
      (display str port))
-   (dot-digraph-gen-digraph dd)))
+   (dot-digraph-gen-digraph dd classes)))
 
 (define dot-digraph-gray60 "gray60")
 (define dot-digraph-gray70 "gray70")
@@ -4762,9 +4949,11 @@
         (types (gvm-instr-types gvm-instr)))
     (format-frame frame types 'combined options)))
 
+(define (frame->string frame types)
+  (format-concatenate (format-frame frame types 'combined '())))
+
 (define (write-frame frame types port)
-  (display (format-concatenate (format-frame frame types 'combined '()))
-           port))
+  (display (frame->string frame types) port))
 
 (define (format-frame frame types style options)
 
@@ -5285,7 +5474,11 @@
            gvm-opnd))))
 
 (define (format-gvm-lbl lbl options)
-  (string-append (if (memq 'new options) "%" "#") (number->string lbl)))
+  (define rename
+    (let ((x (memq rename-lbl: options)))
+      (if x (cadr x) (lambda (l) l))))
+
+  (string-append (if (memq 'new options) "%" "#") (number->string (rename lbl))))
 
 (define (format-gvm-obj val quote?)
   (let ((str
@@ -5557,25 +5750,44 @@
 (define (mark-exit-jump state)
   (instr-comment-add! (InterpreterState-current-instruction state) 'exit-jump #t))
 
+(define (increment-label-counter state bb)
+  (let* ((counter
+          (get-label-counter bb))
+         (count
+          (+ 1 (vector-ref counter 0))))
+    (vector-set! counter 0 count)
+    (let ((ctx (InterpreterState-ctx state)))
+      (if (> count (vector-ref ctx 1))
+          (vector-set! ctx 1 count)))))
+
+(define (get-label-counter bb)
+  (let ((label-instr (bb-label-instr bb)))
+    (or (instr-comment-get label-instr 'label-counter)
+        (let ((c (vector 0)))
+          (instr-comment-add! label-instr 'label-counter c)
+          c))))
+
 (define (increment-branch-counter state target-bbs target-bb)
   (let* ((branch-instr
           (InterpreterState-current-instruction state))
          (table1
-          (get-branch-counters branch-instr))
+          (get-branch-counters-from-branch-instr branch-instr))
          (table2
           (or (table-ref table1 target-bbs #f)
               (let ((t (make-table)))
                 (table-set! table1 target-bbs t)
                 t)))
          (count
-          (+ 1 (table-ref table2 (bb-lbl-num target-bb) 0)))
-         (ctx
-          (InterpreterState-ctx state)))
-    (if (> count (vector-ref ctx 1))
-        (vector-set! ctx 1 count))
-    (table-set! table2 (bb-lbl-num target-bb) count)))
+          (+ 1 (table-ref table2 (bb-lbl-num target-bb) 0))))
+    (table-set! table2 (bb-lbl-num target-bb) count)
+    (let ((ctx (InterpreterState-ctx state)))
+      (if (> count (vector-ref ctx 2))
+          (vector-set! ctx 2 count)))))
 
-(define (get-branch-counters branch-instr)
+(define (get-branch-counters bb)
+  (get-branch-counters-from-branch-instr (bb-branch-instr bb)))
+
+(define (get-branch-counters-from-branch-instr branch-instr)
   (or (instr-comment-get branch-instr 'branch-counter)
       (let ((t (make-table 'test: eq?)))
         (instr-comment-add! branch-instr 'branch-counter t)
@@ -5863,7 +6075,9 @@
       (pprint '***GVM-Interpreter)
       (let ((state (init-interpreter-state gvm-interpret-ctx)))
         (InterpreterState-execution-loop state)
-        (InterpreterState-primitive-counter-trace state)))))
+        (InterpreterState-primitive-counter-trace state)
+        (if track-version-history-for-visualization-tool?
+            (InterpreterState-bb-execution-count-trace state gvm-interpret-ctx))))))
 
 (define (InterpreterState-execution-loop state)
   (let loop ()
@@ -5894,7 +6108,7 @@
   assert-types?
   (primitive-counter unprintable:)
   (bbs-names unprintable:)
-  ctx)
+   ctx)
 
 (define (InterpreterState-stack state) (RTE-stack (InterpreterState-rte state)))
 
@@ -5948,6 +6162,8 @@
     (add-global-primitive rte '##gvm-interpreter-debug)
     (add-global-primitive rte '##fixnum->string)
     (add-global-primitive rte 'command-line)
+
+    (InterpreterState-increment-bb-execution-count! state)
   
     state))
 
@@ -5991,11 +6207,120 @@
     (display-error "\n")
     (error 1)))
 
+(define (InterpreterState-increment-bb-execution-count! state)
+  (increment-label-counter state (InterpreterState-bb state)))
+
 (define (InterpreterState-instr-index-increment! state last-instr)
   ;; increment index if instruction is not a jump
   ;; jump instruction reset index to 0 instead
   (or (memq (gvm-instr-kind last-instr) '(jump ifjump))
       (InterpreterState-instr-index-set! state (+ (InterpreterState-instr-index state) 1))))
+
+(define (InterpreterState-bb-execution-count-trace state gvm-interpret-ctx)
+  ;;(define (with-output-to-file _ f) (f))
+  (define-type BBUsage
+    (bbs unprintable:)
+    orig-lbl-num
+    (specialized-blocks unprintable:))
+
+  (define (json . rest)
+    (define (keyword->key k) (object->string (keyword->string k)))
+    (define (value->string v)
+      (cond
+        ((string? v) v)
+        ((symbol? v) (object->string (symbol->string v)))
+        ((number? v) (number->string v))
+        ((or (null? v) (pair? v)) (list->json v))
+        ((vector? v) (list->json (vector->list v)))
+        ((table? v) (table->json v))
+        ((eq? v #t) "true")
+        ((eq? v #f) "false")
+        (else (error "json - unsupported datatype" v))))
+    (define (list->json l)
+      (define (map-non-proper f l)
+        (cond
+          ((pair? l) (cons (f (car l)) (map-non-proper f (cdr l))))
+          ((null? l) '())
+          (else (cons (f l) '()))))
+      (string-append
+        "["
+          (string-concatenate (map-non-proper value->string l) ", ")
+        "]"))
+    (define (table->json t)
+      (define (to-keyword x)
+        (cond
+          ((string? x) (string->keyword x))
+          ((symbol? x) (to-keyword (symbol->string x)))
+          ((number? x) (to-keyword (number->string x)))
+          (else (error "json - unsupported key type" x))))
+      (apply
+        json
+        (let loop ((pairs (table->list t)))
+          (if (null? pairs)
+              '()
+              (cons
+                (to-keyword (caar pairs))
+                (cons (value->string (cdar pairs))
+                      (loop (cdr pairs))))))))
+
+    (call-with-output-string
+      (lambda (port)
+        (define (output . rest) (apply println port: port rest))
+        (output "{")
+        (let loop ((rest rest))
+          (when (pair? rest)
+            (if (or (not (keyword? (car rest))) (null? (cdr rest))) (error "json expected key-value pair, got" rest))
+            (output (keyword->key (car rest)) ":" (value->string (cadr rest)) (if (null? (cddr rest)) "" ","))
+            (loop (cddr rest))))
+        (output "}"))))
+
+  (define specialized-blocks '())
+
+  (define (collect-specialized-bb bb bbs)
+    (define (flat-map . args)
+      (apply append (apply map args)))
+    (define (convert-lbl lbl #!optional (bbs bbs))
+      (or (instr-comment-get (bb-label-instr (lbl-num->bb lbl bbs)) 'new-lbl) (error "no new-lbl" bb)))
+    (set! specialized-blocks
+      (cons
+        (json
+          id: (convert-lbl (bb-lbl-num bb))
+          origin: (or (instr-comment-get (bb-label-instr bb) 'orig-lbl) (error "no orig-lbl" bb))
+          bbs: (object->string (InterpreterState-get-bbs-name state bbs))
+          source: (object->string (object->string (source->expression (node-source (instr-comment-get (bb-label-instr bb) 'node)))))
+          usage: (get-label-counter bb)
+          context: (object->string (format-concatenate (format-gvm-instr-frame (bb-label-instr bb) '())))
+          predecessors: (map convert-lbl (bb-precedents bb))
+          successors: (map convert-lbl (bb-successors bb))
+          references: (map convert-lbl (bb-references bb))
+          ret: (map convert-lbl (bb-jump-return bb))
+          jumps:
+            (flat-map
+              (lambda (bbs-table)
+                (map
+                  (lambda (bb-count)
+                    (json
+                      bbs: (object->string (InterpreterState-get-bbs-name state (car bbs-table)))
+                      id: (convert-lbl (car bb-count) (car bbs-table))
+                      count: (cdr bb-count)))
+                  (table->list (cdr bbs-table))))
+              (table->list (get-branch-counters bb)))
+          details: (object->string (call-with-output-string (lambda (port) (write-bb bb (list rename-lbl: convert-lbl) port)))))
+        specialized-blocks)))
+
+  (for-each
+    (lambda (module-proc)
+      (let ((bbs (proc-obj-code module-proc)))
+        (bbs-for-each-bb (lambda (bb) (collect-specialized-bb bb bbs)) bbs)))
+    (vector-ref gvm-interpret-ctx 0))
+
+
+
+  (let ((content (json
+                    compiler: "\"gambit\""
+                    specializedCFG: specialized-blocks
+                    history: (get-version-events-history))))
+    (with-output-to-file "visual-sbbv.json" (lambda () (display content)))))
 
 (define (InterpreterState-register-bbs-name! state proc)
   (table-set! (InterpreterState-bbs-names state) (proc-obj-code proc) (proc-obj-name proc)))
@@ -6306,6 +6631,7 @@
     (if ret (RTE-set! rte backend-return-label-location ret))
     (InterpreterState-bbs-set! state bbs)
     (InterpreterState-bb-set! state bb)
+    (InterpreterState-increment-bb-execution-count! state)
     (InterpreterState-instr-index-set! state 0)))
 
 (define (InterpreterState-execute-ifjump state instr)
@@ -6350,7 +6676,7 @@
               (list "<<" t)
               (map (lambda (n) (string-append " " (obj->string-safe n))) names)
               '(">>"))))
-    (apply string-append elements)))
+    (string-concatenate elements)))
 
   (string->short-string
     (cond
