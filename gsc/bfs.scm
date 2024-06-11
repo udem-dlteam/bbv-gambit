@@ -218,11 +218,11 @@
                     node)))
 
             (define (catch node)
+                (set-remove! all-loosened node)
                 (neighbors-for-each
                 (lambda (neighbor)
                     (when (loose? neighbor)
                     (set-parent! tree neighbor node)
-                    (set-remove! all-loosened node)
                     (update-rank! tree neighbor)
                     (queue-put! catch-queue neighbor)))
                 tree
