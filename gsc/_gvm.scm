@@ -2211,10 +2211,14 @@
 (define (bbs-type-specialize* bbs)
 
   (define-macro (reachability-debug lbl . rest)
-    #f)
-  (define reachability-debug-lbl 1)
-  (define (reachability-debug* lbl . rest)
-    (let ((result (and reachability-debug-lbl (= lbl reachability-debug-lbl))))
+    (define reachability-debug-lbls '())
+    (define reachability-debug-bbs "run")
+    (if (null? reachability-debug-lbls)
+        #f
+        `(reachability-debug* ,reachability-debug-bbs ',reachability-debug-lbls ,lbl ,@rest)))
+    
+  (define (reachability-debug* bbs lbls lbl . rest)
+    (let ((result (and (equal? bbs bbs-proc-name) (memq lbl lbls))))
       (if result (pp (append rest (list lbl))))
       result))
 
@@ -2515,8 +2519,8 @@
               most-recent-version)
             (let* ((new-lbl (or most-recent-version (new-lbl! lbl))))
               (bb-versions-active-lbl-add! bb-versions version-types new-lbl)
-              (track-version-history lbl (list 'add from-lbl)) ;; track history of versions
               (queue-put! work-queue (make-queue-task bb new-lbl))
+              (track-version-history lbl (list 'add from-lbl)) ;; track history of versions
               (reachability-debug new-lbl 'reaching 'anew)
               (if from-lbl (add-edge! BFSTree from-lbl new-lbl onrevive))
               new-lbl))))
@@ -3095,6 +3099,7 @@
         (> (bb-versions-active-lbl-length bb-versions) (max 1 (bb-version-limit bb)))))
 
     (define (onrevive lbl)
+<<<<<<< Updated upstream
       (if (new-lbl? lbl new-bbs)
           (let* ((orig-lbl (orig-lbl-mapping-ref lbl))
                   (bb (lbl-num->bb orig-lbl bbs))
@@ -3106,6 +3111,18 @@
               (get-version-types lbl)
               lbl)
             (queue-put! work-queue (make-queue-task bb lbl)))))
+=======
+      (add-version-history-event reachable (orig-lbl-mapping-ref lbl) lbl)
+      (let* ((orig-lbl (orig-lbl-mapping-ref lbl))
+              (bb (lbl-num->bb orig-lbl bbs))
+              (bb-versions (get-bb-versions-from-lbl orig-lbl)))
+        (reachability-debug lbl 'revive)
+        (bb-versions-active-lbl-add!
+          bb-versions
+          (get-version-types lbl)
+          lbl)
+        (queue-put! work-queue (make-queue-task bb lbl))))
+>>>>>>> Stashed changes
 
     (define (onkill lbl)
       (let* ((orig-lbl (orig-lbl-mapping-ref lbl))
@@ -3153,13 +3170,13 @@
         (reachability-debug new-lbl 'merged 'created)
 
         (for-each
-          (lambda (type-lbl) (bb-versions-active-lbl-remove! bb-versions (car type-lbl)))
+          (lambda (type-lbl) (if (not (eq? (car type-lbl) new-lbl))
+                                 (bb-versions-active-lbl-remove! bb-versions (car type-lbl))))
           versions-to-merge)
 
         (track-version-history lbl (list 'merge #f details)) ;; track history of versions
 
-        (if (new-lbl? new-lbl new-bbs)
-            (queue-put! work-queue (make-queue-task bb new-lbl)))))
+        (queue-put! work-queue (make-queue-task bb new-lbl))))
 
     (define bfs-source-node -1)
     (define BFSTree (make-BFSTree bfs-source-node))
@@ -3184,8 +3201,15 @@
           (reachability-debug version-lbl 'dequeued)
 
           (when (reachable? version-lbl)
+<<<<<<< Updated upstream
             (if (need-merge? bb) (merge bb))
             (walk-bb bb types version-lbl))
+=======
+            (if (need-merge? bb)
+                (merge bb))
+            (if (and (reachable? version-lbl) (new-lbl? version-lbl new-bbs))
+                (walk-bb bb types version-lbl)))
+>>>>>>> Stashed changes
           
           (if (not (queue-empty? work-queue)) (loop))))
 
