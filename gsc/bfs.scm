@@ -152,7 +152,7 @@
             (define (hoist hoister node)
                 (when (dirty-edge? tree hoister node)
                 (set-parent! tree node hoister)
-                (if (and onrevive (= (get-rank tree node) infinity)) (onrevive node))
+                (if (and onrevive (= (get-rank tree node) infinity)) (onrevive node (cons from to)))
                 (update-rank! tree node)
                 (neighbors-for-each
                     (lambda (n)
@@ -245,7 +245,7 @@
                 ;; all buckets caught, catch rest of the queue
                 (do () ((queue-empty? catch-queue))
                 (catch (queue-get! catch-queue)))
-                (if onkill (set-for-each onkill all-loosened))))
+                (if onkill (set-for-each (lambda (lbl) (onkill lbl to)) all-loosened))))
 
         (define (connected? tree node)
             (not (= (get-rank tree node) infinity)))

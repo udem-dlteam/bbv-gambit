@@ -3191,7 +3191,7 @@
               (bb-versions (get-bb-versions bb)))
         (> (bb-versions-active-lbl-length bb-versions) (max 1 (bb-version-limit bb)))))
 
-    (define (onrevive lbl)
+    (define (onrevive lbl cause)
       (add-version-history-event reachable (orig-lbl-mapping-ref lbl) lbl)
       (let* ((orig-lbl (orig-lbl-mapping-ref lbl))
               (bb (lbl-num->bb orig-lbl bbs))
@@ -3203,7 +3203,7 @@
           lbl)
         (queue-put! work-queue (make-queue-task bb lbl))))
 
-    (define (onkill lbl)
+    (define (onkill lbl cause)
       (let* ((orig-lbl (orig-lbl-mapping-ref lbl))
              (bb-versions (get-bb-versions-from-lbl orig-lbl)))
         (add-version-history-event unreachable orig-lbl lbl)
