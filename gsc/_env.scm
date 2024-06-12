@@ -2,7 +2,7 @@
 
 ;;; File: "_env.scm"
 
-;;; Copyright (c) 1994-2021 by Marc Feeley, All Rights Reserved.
+;;; Copyright (c) 1994-2024 by Marc Feeley, All Rights Reserved.
 
 (include "fixnum.scm")
 
@@ -38,6 +38,7 @@
 ;; special variable used to denote the return address of a procedure
 
 (define ret-var '())
+(define ret-var2 '())
 (define ret-var-set '())
 
 ;; special variable used to denote the pointer to the closed variables
@@ -311,6 +312,7 @@
 (define (env.begin!)                    ; initialize module
   (set! next-var-stamp (make-counter 0))
   (set! ret-var (make-temp-var 'ret))
+  (set! ret-var2 (make-temp-var 'ret2))
   (set! ret-var-set (varset-singleton ret-var))
   (set! closure-env-var (make-temp-var 'closure-env))
   (set! empty-var (make-temp-var #f))
@@ -319,6 +321,7 @@
 (define (env.end!)                      ; finalize module
   (set! next-var-stamp '())
   (set! ret-var '())
+  (set! ret-var2 '())
   (set! ret-var-set '())
   (set! closure-env-var '())
   (set! empty-var '())

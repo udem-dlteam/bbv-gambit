@@ -111,7 +111,8 @@
       (let ((var1 (car lst1)))
         (if (pair? lst2)
           (let ((var2 (car lst2)))
-            (and (eq? (eq? var1 ret-var) (eq? var2 ret-var))
+            (and (or (eq? (eq? var1 ret-var) (eq? var2 ret-var))
+                     (eq? (eq? var1 ret-var2) (eq? var2 ret-var2)))
                  (same-liveness? var1 var2)
                  (same-liveness-list? (cdr lst1) (cdr lst2))))
           (and (same-liveness? var1 empty-var)
@@ -881,7 +882,9 @@
 ;; is always the entry point.
 
 (define (bbs-purify bbs proc)
-  (define optim? #t)
+
+  (define purify? #t)
+
   (define (purify-step bbs0)
     (let* ((bbs1 (bbs-remove-jump-cascades bbs0))
            (bbs2 (bbs-remove-dead-code bbs1))
@@ -889,14 +892,19 @@
            (bbs4 (bbs-remove-useless-jumps bbs3)))
       (cons bbs2 bbs4)))
 
-  (let loop ((bbs0 (bbs-type-specialize (if (not optim?) bbs (cdr (purify-step bbs))) proc)))
-    (if (not optim?) (begin (bbs-determine-refs! bbs0) (bbs-order bbs0))
-    (let* ((bbs1-bbs2 (purify-step bbs0))
-           (bbs1 (car bbs1-bbs2))
-           (bbs2 (cdr bbs1-bbs2)))
-      (if (not (eq? bbs1 bbs2)) ;; iterate until code does not change
-          (loop bbs2)
-          (bbs-order bbs2))))))
+  (if (not purify?)
+
+      (let ((new-bbs (bbs-type-specialize bbs proc)))
+        (bbs-determine-refs! new-bbs)
+        (bbs-order new-bbs))
+
+      (let loop ((bbs0 (bbs-type-specialize (cdr (purify-step bbs)) proc)))
+        (let* ((bbs1-bbs2 (purify-step bbs0))
+               (bbs1 (car bbs1-bbs2))
+               (bbs2 (cdr bbs1-bbs2)))
+          (if (not (eq? bbs1 bbs2)) ;; iterate until code does not change
+              (loop bbs2)
+              (bbs-order bbs2))))))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -967,6 +975,15 @@
             (set! lbl-changed? #t))
         lbl))
 
+    (define (add-ret-var2-to-frame frame)
+      (make-frame
+       (frame-size frame)
+       (frame-slots frame)
+       (let ((regs (frame-regs frame)))
+         (cons ret-var2 (if (pair? regs) (cdr regs) '()))) ;; assumes (define return-addr-reg (make-reg 0))
+       (frame-closed frame)
+       (varset-adjoin (frame-live frame) ret-var2)))
+
     (define (remove-cascade! bb)
       (let ((branch (bb-branch-instr bb)))
 
@@ -978,6 +995,11 @@
                 (bb-branch-instr-set! new-bb new-branch-instr)
                 (let* ((lbl2
                         (bbs-new-lbl! new-bbs))
+                       (dest-label-instr
+                        (bb-label-instr
+                         (stretchable-vector-ref
+                          (bbs-basic-blocks bbs)
+                          (lbl-num (jump-opnd last-jump/ret)))))
                        (new-bb2
                         (make-bb
                          (gvm-instr-copy-types!
@@ -985,11 +1007,7 @@
                           (make-label-simple
                            lbl2
                            (gvm-instr-frame last-jump/ret)
-                           (gvm-instr-comment
-                              (bb-label-instr
-                                (stretchable-vector-ref
-                                  (bbs-basic-blocks bbs)
-                                  (lbl-num (jump-opnd last-jump/ret)))))))
+                           (gvm-instr-comment dest-label-instr)))
                          new-bbs)))
                   (bb-branch-instr-set!
                    new-bb
@@ -1003,7 +1021,23 @@
                      #f
                      (gvm-instr-frame last-jump/ret)
                      (gvm-instr-comment last-jump/ret))))
-                  (bb-branch-instr-set! new-bb2 new-branch-instr)))))
+                  (bb-branch-instr-set! new-bb2 new-branch-instr)
+#;
+(if (memv (bb-lbl-num new-bb) '(33 53))
+    (begin
+      (println "zzzzzzzzzzzzzzzzzzzzzzzz")
+      (write-bb new-bb '() (current-output-port))
+      (newline)
+      (write-bb new-bb2 '() (current-output-port))
+      (newline)
+      (let ((dest-bb (and (eq? (gvm-instr-kind new-branch-instr) 'jump) (jump-lbl? new-branch-instr) (lbl-num->bb (jump-lbl? new-branch-instr) bbs))))
+        (pp (list (gvm-instr-kind new-branch-instr)))
+        (if dest-bb
+            (begin
+              (write-bb new-bb '() (current-output-port))
+              (newline))))))
+
+))))
 
         (stretchable-vector-set!
          (bbs-basic-blocks new-bbs)
@@ -1089,9 +1123,40 @@
                                  (new-frame (frame-truncate ;; TODO: fix r0 missing from live vars
                                              (gvm-instr-frame branch)
                                              new-fs))
+                                 (new-frame ;; TODO: check if this is sufficient to make r0 live
+                                  (if last-jump/ret
+                                      (add-ret-var2-to-frame new-frame)
+                                      new-frame))
+                                 #;
+                                 (_ (if last-jump/ret
+                                        (begin
+                                          (println "@@@@@@@@@@@@@@@@@@@@")
+                                          (pp (varset-member? ret-var (frame-live new-frame)))
+                                          (println "slots:")
+                                          (for-each
+                                           (lambda (v)
+                                             (if v
+                                                 (pp (list (var-name v)))
+                                                 (pp '***)))
+                                           (frame-slots new-frame))
+                                          (println "regs:")
+                                          (for-each
+                                           (lambda (v)
+                                             (if v
+                                                 (pp (list (var-name v)))
+                                                 (pp '***)))
+                                           (frame-regs new-frame))
+                                          (pp (list fs new-fs))
+                                          (println (format-frame (gvm-instr-frame branch) #f 'combined '()))
+                                          (println (format-frame new-frame #f 'combined '()))
+                                          (set! show-locenv? #t))))
                                  (new-types (types-truncate
                                              (gvm-instr-types branch)
-                                             new-frame)))
+                                             new-frame))
+                                 #;
+                                 (_ (if last-jump/ret (set! show-locenv? #f)))
+
+)
 
                             (define (adjust-opnd opnd)
                               (cond ((stk? opnd)
@@ -2206,7 +2271,7 @@
 ;; -------------
 
 (define debug-bbv? #f)
-(define track-version-history? #f)
+(define track-version-history? #t)
 (define track-version-history-for-visualization-tool? #f)
 
 (define track-version-history-counter 0)
@@ -2301,7 +2366,7 @@
     (if (null? reachability-debug-lbls)
         #f
         `(reachability-debug* ,reachability-debug-bbs ',reachability-debug-lbls ,lbl ,@rest)))
-    
+
   (define (reachability-debug* bbs lbls lbl . rest)
     (let ((result (and (equal? bbs bbs-proc-name) (memq lbl lbls))))
       (if result (pp (append rest (list lbl))))
@@ -2431,9 +2496,9 @@
         new-lbl))
     (define (new-lbl? lbl bbs) (not (lbl-num->bb lbl bbs)))
 
-    (define (reachable? lbl) (connected? BFSTree lbl)) 
+    (define (reachable? lbl) (connected? BFSTree lbl))
 
-    (define (bbs-cleanup) 
+    (define (bbs-cleanup)
       ;; remove unreachable bb
       ;; required to avoid having uninitialized bb in the bbs
       (bbs-for-each-bb
@@ -2460,7 +2525,7 @@
                   (types-lbl-alist (bb-versions-active-lbl->list bb-versions sort?: #t))
                   (text-grid (bb-versions-text-grid bb-versions))
                   (version-index-tbl (bb-versions-index-table bb-versions))
-                  (options '(brief new))
+                  (options '(new))
                   (col (max 1 (text-grid-cols text-grid)))
                   (op (car operation))
                   (from-lbl (cadr operation)))
@@ -2572,36 +2637,35 @@
               (lambda (types-lbl)
                 (let* ((types (car types-lbl))
                       (version-lbl (cdr types-lbl))
-                      (i (table-ref version-index-tbl version-lbl))
-                      (typs (format-frame frame types 'types options)))
-                  (text-grid-line-set! text-grid (+ i 2) (+ col 1) typs)))
+                      (i (table-ref version-index-tbl version-lbl #f)))
+                  (if i
+                      (let ((typs (format-frame frame types 'types options)))
+                        (text-grid-line-set! text-grid (+ i 2) (+ col 1) typs)))))
               types-lbl-alist))))
 
     (define (reach lbl from-lbl bbvctx)
       (let* ((types-before (bbvctx-types bbvctx))
-              (bb (lbl-num->bb lbl bbs))
-              (label (bb-label-instr bb))
-              (frame (gvm-instr-frame label))
-              (types-before
+             (bb (lbl-num->bb lbl bbs))
+             (label (bb-label-instr bb))
+             (frame (gvm-instr-frame label))
+             (types-before
               (if (and (eq? (label-kind label) 'entry)
                         (or (pair? (label-entry-keys label)) ;; label with "complex" parameter handling?
                             (pair? (label-entry-opts label))
                             (label-entry-rest? label)))
                   (generic-entry-frame-types frame)
                   (resized-frame-types-remove-dead frame types-before)))
-              (bb-versions (get-bb-versions bb))
-              (old-version (bb-versions-all-lbl-get bb-versions types-before))
-              (most-recent-version
-                (and old-version (replacement-lbl-num old-version)))
-              (version-types
-                (if most-recent-version
-                    (get-version-types most-recent-version)
-                    types-before))
-              (version-is-live?
-                (and most-recent-version
-                    (bb-versions-active-lbl-get bb-versions version-types))))
-
-
+             (bb-versions (get-bb-versions bb))
+             (old-version (bb-versions-all-lbl-get bb-versions types-before))
+             (most-recent-version
+              (and old-version (replacement-lbl-num old-version)))
+             (version-types
+              (if most-recent-version
+                  (get-version-types most-recent-version)
+                  types-before))
+             (version-is-live?
+              (and most-recent-version
+                   (bb-versions-active-lbl-get bb-versions version-types))))
         (if version-is-live?
             (begin
               (reachability-debug most-recent-version 'reaching 'live)
@@ -2619,10 +2683,16 @@
               new-lbl))))
 
     (define (walk-bb bb types-before new-lbl)
-      (let ((orig-lbl (bb-lbl-num bb))
-            (new-bb #f))
+      (let* ((orig-lbl (bb-lbl-num bb))
+             (new-bb #f)
+#;             (_
+              (if (= new-lbl 63)
+                  (begin
+                    (println (c#format-frame (c#gvm-instr-frame (c#bb-label-instr bb)) types-before 'combined '()))
+                    (##repl-debug-main)))))
 
         (define show #t)
+
         (define (reach* lbl types-after)
           (if (and debug-bbv? show)
               (begin
@@ -2630,8 +2700,8 @@
                 (print "...\n")
                 (set! show #f)))
           (reach lbl
-                  new-lbl
-                  (make-bbvctx
+                 new-lbl
+                 (make-bbvctx
                   (let ((dest-fs (bb-entry-frame-size (lbl-num->bb lbl bbs))))
                     (types-keep-topmost-slots types-after dest-fs)))))
 
@@ -2677,7 +2747,7 @@
                 ((obj? new-opnd)
                   (make-type-singleton (obj-val new-opnd)))
                 ((lbl? new-opnd)
-                  (let* ((new-lbl (lbl-num new-opnd))
+                 (let* ((new-lbl (lbl-num new-opnd))
                         (orig-lbl (orig-lbl-mapping-ref new-lbl))
                         (kind (bb-label-kind (lbl-num->bb orig-lbl bbs)))
                         (lbl-obj (make-lbl-obj orig-lbl new-lbl kind #f)))
@@ -2708,7 +2778,7 @@
                     (case (label-kind gvm-instr)
 
                       ((simple)
-                        (make-label-simple
+                       (make-label-simple
                         new-lbl
                         (gvm-instr-frame gvm-instr)
                         (gvm-instr-comment gvm-instr)))
@@ -2973,6 +3043,19 @@
                                     (and false-types
                                         (reach* (ifjump-false gvm-instr)
                                                 false-types))))
+
+  #;
+  (if (= new-lbl 62)
+      (begin
+        (pp 'IFJUMP)
+        (println (format-frame (gvm-instr-frame (bb-label-instr bb)) types-before 'combined '()))
+        (println (format-frame (gvm-instr-frame gvm-instr) types-before 'combined '()))
+;        (pp types-before)
+;        (pp types-after)
+;        (pp true-types)
+;        (pp false-types)
+))
+
                               (if true-lbl
                                   (if false-lbl
                                       (make-ifjump
@@ -3114,9 +3197,9 @@
             'cfg-bb-info
             (list
             (cons 'info
-                  (string-append (format-gvm-lbl orig-lbl '())
-                                  "->"
-                                  (format-gvm-lbl new-lbl '(new)))))))
+                  (string-append (format-gvm-lbl new-lbl '(new))
+                                 " orig:"
+                                 (format-gvm-lbl orig-lbl '()))))))
 
         (let loop ((instrs
                     (bb-non-branch-instrs bb))
@@ -3147,7 +3230,7 @@
                               (make-table test: locenv-eqv?)))))
             (table-set! versions lbl bb-versions)
             bb-versions)))
-    
+
     (define (bb-versions-active-lbl-get bb-versions types-before)
       (table-ref (vector-ref bb-versions 0) types-before #f))
     (define (bb-versions-active-lbl-remove! bb-versions types-before)
@@ -3223,37 +3306,60 @@
               (versions-to-keep (map (lambda (i) (vector-ref types-lbl-vect i)) out))
               (merged-types (types-merge-multi (map car versions-to-merge) #t))
               (merged-types-before-replacement merged-types)
-              (existing-lbl-of-merged-type 
+              (existing-lbl-of-merged-type
                 (bb-versions-all-lbl-get bb-versions merged-types))
               (new-lbl (or (and existing-lbl-of-merged-type
                                 (replacement-lbl-num existing-lbl-of-merged-type))
                             (new-lbl! lbl)))
               (merged-types (if (not existing-lbl-of-merged-type)
                                 merged-types
-                                (get-version-types new-lbl))))
+                                (get-version-types new-lbl)))
+              (lbls-to-merge (map cdr versions-to-merge)))
+
+        (if '(or (equal? lbls-to-merge '(27 39)) (equal? lbls-to-merge '(39 27)))
+            (begin
+              (println "-----------------------------------")
+              (pp (list 'merge: lbls-to-merge))
+              (for-each
+               (lambda (v)
+                 (println (format-frame (bb-entry-frame bb) (car v) 'combined '())))
+               versions-to-merge)
+              (println "=>")
+              (println (format-frame (bb-entry-frame bb) merged-types 'combined '()))))
 
         (add-version-history-event
           merge
           lbl
-          (map cdr versions-to-merge)
+          lbls-to-merge
           new-lbl
           (frame->string (bb-entry-frame bb) merged-types))
 
         (bb-versions-active-lbl-add! bb-versions merged-types new-lbl)
 
-        (for-each
-          (lambda (types-lbl)
-            (let ((types (car types-lbl))
-                  (lbl (cdr types-lbl)))
-              (table-set! lbl-mapping lbl new-lbl)
-              (reachability-debug lbl 'merge new-lbl '<-)
-              (reachability-debug new-lbl 'merge lbl '->)
-              (if (not (eq? lbl new-lbl))
-                  (replace!
-                    BFSTree lbl new-lbl
-                    onrevive
-                    onkill))))
-          versions-to-merge)
+        (let ((killed '()))
+          (for-each
+           (lambda (types-lbl)
+             (let ((types (car types-lbl))
+                   (lbl (cdr types-lbl)))
+               (table-set! lbl-mapping lbl new-lbl)
+               (reachability-debug lbl 'merge new-lbl '<-)
+               (reachability-debug new-lbl 'merge lbl '->)
+               (if (not (eq? lbl new-lbl))
+                   (begin
+                     (replace!
+                      BFSTree lbl new-lbl
+                      onrevive
+                      (lambda (lbl cause)
+                        (if (not (memv lbl lbls-to-merge))
+                            (set! killed (cons lbl killed)))
+                        (onkill lbl cause)))))))
+           versions-to-merge)
+          (for-each
+           (lambda (lbl)
+             (track-version-history
+              (orig-lbl-mapping-ref lbl)
+              (list 'gc lbl))) ;; track history of versions
+           killed))
 
         (reachability-debug new-lbl 'merged 'created)
 
@@ -3271,11 +3377,11 @@
 
     (let* ((entry-lbl
             (bbs-entry-lbl-num bbs))
-            (entry-bb
+           (entry-bb
             (lbl-num->bb entry-lbl bbs))
-            (entry-label
+           (entry-label
             (bb-label-instr entry-bb))
-            (types-before
+           (types-before
             (generic-entry-frame-types (gvm-instr-frame entry-label))))
 
       (bbs-entry-lbl-num-set! new-bbs (reach entry-lbl #f (make-bbvctx types-before)))
@@ -3293,12 +3399,42 @@
                 (merge bb))
             (if (and (reachable? version-lbl) (new-lbl? version-lbl new-bbs))
                 (walk-bb bb types version-lbl)))
-          
+
           (if (not (queue-empty? work-queue)) (loop))))
 
       (bbs-entry-lbl-num-set! new-bbs (replacement-lbl-num (bbs-entry-lbl-num bbs)))
 
       (bbs-cleanup)))
+
+  (define (decorate-cfg new-bbs)
+    (bbs-for-each-bb
+     (lambda (bb)
+       (let* ((orig-lbl (instr-comment-get (bb-label-instr bb) 'orig-lbl))
+              (bb-versions (and orig-lbl (table-ref versions orig-lbl #f)))
+              (info
+               (call-with-output-string
+                 (lambda (port)
+                   (if bb-versions
+                       (let ((text-grid (vector-ref bb-versions 2)))
+                         (text-grid-set! text-grid 0 (text-grid-cols text-grid) column-sep)
+                         (let loop1 ((col 0))
+                           (if (< col (text-grid-cols text-grid))
+                               (let ((x (text-grid-ref text-grid 0 col)))
+                                 (if (equal? x column-sep)
+                                     (let loop2 ((row 1))
+                                       (if (< row (text-grid-rows text-grid))
+                                           (begin
+                                             (text-grid-set! text-grid row col x)
+                                             (loop2 (+ row 1))))))
+                                 (loop1 (+ col 1)))))
+                         (text-grid-display text-grid port)
+                         (newline port)))
+                   (write-bb bb '(new) port)))))
+         (instr-comment-add!
+          (bb-label-instr bb)
+          'cfg-bb-info2
+          info)))
+     new-bbs))
 
   (define (finalize)
 
@@ -3306,6 +3442,9 @@
      (lambda (bb)
        (bb-clone-replacing-lbls bb new-bbs replacement-lbl-num #f))
      new-bbs)
+
+    (if track-version-history?
+        (decorate-cfg new-bbs))
 
     new-bbs)
 
@@ -3315,30 +3454,53 @@
 
   (walk-bbs bbs)
 
+  #;
   (if track-version-history?
       (bbs-for-each-bb
        (lambda (bb)
-         (let* ((port (current-output-port))
-                (lbl (bb-lbl-num bb))
+         (let* ((lbl (bb-lbl-num bb))
                 (bb-versions (table-ref versions lbl #f)))
            (if (and bb-versions (show-version-history-of-lbl lbl))
-               (let ((text-grid (vector-ref bb-versions 2)))
-                 (display "-------------------------------------------------------------------------------\n" port)
-                 (text-grid-set! text-grid 0 (text-grid-cols text-grid) column-sep)
-                 (let loop1 ((col 0))
-                   (if (< col (text-grid-cols text-grid))
-                       (let ((x (text-grid-ref text-grid 0 col)))
-                         (if (equal? x column-sep)
-                             (let loop2 ((row 1))
-                               (if (< row (text-grid-rows text-grid))
-                                   (begin
-                                     (text-grid-set! text-grid row col x)
-                                     (loop2 (+ row 1))))))
-                         (loop1 (+ col 1)))))
-                 (text-grid-display text-grid port)
-                 (newline port)
-                 (write-bb bb '() port)
-                 (newline port)))))
+               (let ((output1
+                      (call-with-output-string
+                        (lambda (port)
+                          (let ((text-grid (vector-ref bb-versions 2)))
+                            (text-grid-set! text-grid 0 (text-grid-cols text-grid) column-sep)
+                            (let loop1 ((col 0))
+                              (if (< col (text-grid-cols text-grid))
+                                  (let ((x (text-grid-ref text-grid 0 col)))
+                                    (if (equal? x column-sep)
+                                        (let loop2 ((row 1))
+                                          (if (< row (text-grid-rows text-grid))
+                                              (begin
+                                                (text-grid-set! text-grid row col x)
+                                                (loop2 (+ row 1))))))
+                                    (loop1 (+ col 1)))))
+                            (text-grid-display text-grid port))))))
+                 (display "-------------------------------------------------------------------------------\n")
+                 (display output1)
+                 (newline)
+
+                 (for-each
+                  (lambda (types-lbl)
+                    (let ((types (car types-lbl))
+                          (lbl (cdr types-lbl)))
+                      (pp lbl)
+                      (let ((bb (lbl-num->bb lbl new-bbs)))
+                        (if bb
+                            (let* ((output2
+                                    (call-with-output-string
+                                      (lambda (port)
+                                        (define (convert-lbl lbl #!optional (new-bbs new-bbs))
+                                          (instr-comment-get (bb-label-instr (lbl-num->bb lbl new-bbs)) 'new-lbl))
+                                        (write-bb bb '(new) port))))
+                                   (info
+                                    (string-append output1 "\n" output2)))
+                              (instr-comment-add!
+                               (bb-label-instr bb)
+                               'cfg-bb-info2
+                               info))))))
+                  (table->list (vector-ref bb-versions 0)))))))
        bbs))
 
   (finalize))
@@ -3385,7 +3547,7 @@
 (define (entropy-difference tctx type1 type2)
   (define type-fixnum-marker (gensym))
 
-  (define (geometric n) 
+  (define (geometric n)
     (define r 1/10)
     (/ (- 1 (expt r n)) (- 1 r)))
 
@@ -3399,7 +3561,7 @@
 
 ;; Sametypes strategy
 (define (types-distance-sametypes tctx types1 types2)
-  ;; sametypes chooses to merge 
+  ;; sametypes chooses to merge
   (define (compute-score types)
     (define (score type)
       (if (type-included? tctx type type-fixnum)
@@ -3422,7 +3584,7 @@
     (define (increment-score type)
       (let ((cell (get-type-cell type)))
         (set-cdr! cell (+ (cdr cell) (score type)))))
-    
+
     (let ((len (vector-length types)))
       (let loop ((i locenv-start-regs))
         (if (< i len)
@@ -3430,7 +3592,7 @@
               (increment-score type)
               (loop (+ i locenv-entry-size)))))
       (apply max (map cdr score-by-type))))
-      
+
   ;; highscore means higher distance
   ;; the versions with two lowest score are merged
   ;; break ties with entropy strategy
@@ -3461,23 +3623,30 @@
 
   (declare (generic))
 
-  (define single-type-specificity 31)
+  (define single-type-specificity 4)
 
-  (define (specificity type)
-    ;; returns an integer indicating how specific that type is
-    ;; roughly speaking the log2 of the cardinality of the possible values
-    ;; the whole fixnum range counts as 31
-    ;; other types count as 31
-    ;; 0 is the most specific (a singleton type), 1 means 2 possible values, etc
+  (define (fixnum-specificity tctx type)
     (if (type-singleton? type)
         0
         (let* ((t (type-motley-force tctx type))
-               (fixnum-range (type-fixnum-range-numeric tctx t))
+               (fixnum-range (type-motley-fixnum-range t))
                (lo (type-fixnum-range-lo fixnum-range))
-               (hi (type-fixnum-range-hi fixnum-range))
-               (n (if (>= hi lo)
-                      (integer-length (+ 1 (- hi lo)))
-                      0)))
+               (hi (type-fixnum-range-hi fixnum-range)))
+          (cond ((and (eq? lo '>=) (eq? hi '<=))
+                 3)
+                ((or (and (number? lo) (>= lo -1))
+                     (and (number? hi) (<= hi 0)))
+                 2)
+                (else
+                 1)))))
+
+  (define (specificity type)
+    ;; returns an integer indicating how specific that type is
+    ;; 0 is the most specific (a singleton type)
+    (if (type-singleton? type)
+        0
+        (let* ((t (type-motley-force tctx type))
+               (n (fixnum-specificity tctx type)))
           (+ n
              (* single-type-specificity
                 (bit-count
@@ -3507,9 +3676,10 @@
           (let* ((type1 (vector-ref types1 (+ i 1)))
                  (type2 (vector-ref types2 (+ i 1)))
                  (ltd (linear-type-distance tctx type1 type2))
-                 (dist ltd))
+                 (dist (+ ltd (abs (- (fixnum-specificity tctx type1)
+                                      (fixnum-specificity tctx type2))))))
             (loop (+ i locenv-entry-size) (+ acc dist)))
-          (+ (* acc 100000) (quotient 99999 (+ 1 ut1 ut2)))))))
+          (+ (* acc 10000) (quotient 9999 (+ 1 ut1 ut2)))))))
 
 (define types-distance #f)
 
@@ -3743,7 +3913,7 @@
                                         (new-prev j))
                               (if (= curr i) ;; finished iterating over class?
                                   (begin
-                                    (vector-set!
+                                   (vector-set!
                                      new-locenv
                                      new-prev
                                      j)
@@ -4132,6 +4302,128 @@
       (vector-ref colors (modulo orig-lbl (vector-length colors)))
       node-info-default-bgcolor))
 
+  (define (compress-spaces str)
+    (define max-run 32)
+    (define (run len)
+      (if (= len 1)
+          #\space
+          (integer->char (if (<= len 11) (- len 2) (- len 1)))))
+    (list->string
+     (reverse
+      (let loop ((len 0) (end 0) (parts '()))
+        (if (< end (string-length str))
+            (let ((c (string-ref str end)))
+              (if (char=? c #\space)
+                  (if (< len max-run)
+                      (loop (+ len 1) (+ end 1) parts)
+                      (loop 0 end (cons (run len) parts)))
+                  (if (= len 0)
+                      (loop 0 (+ end 1) (cons c parts))
+                      (loop 0 (+ end 1) (cons c (cons (run len) parts))))))
+            (if (= len 0)
+                parts
+                (cons (run len) parts)))))))
+
+  (define (utf8-encode str)
+
+    (define (shift-right-6-bits x)
+      (quotient x 64))
+
+    (define (extract-low-6-bits x)
+      (modulo x 64))
+
+    (define (first-byte shift x)
+      (+ (- #xff (quotient #xff shift)) x))
+
+    (define (next-byte x)
+      (+ #x80 (extract-low-6-bits x)))
+
+    (let loop ((i (- (string-length str) 1)) (bytes '()))
+      (if (< i 0)
+          bytes
+          (loop (- i 1)
+                (let* ((c (string-ref str i))
+                       (x0 (character->unicode c)))
+                  (cond ((<= x0 #x7f)
+                         (cons x0 bytes))
+                        ((<= x0 #x7ff)
+                         (let* ((x1 (shift-right-6-bits x0)))
+                           (cons (first-byte 4 x1)
+                                 (cons (next-byte x0)
+                                       bytes))))
+                        ((<= x0 #xffff)
+                         (let* ((x1 (shift-right-6-bits x0))
+                                (x2 (shift-right-6-bits x1)))
+                           (cons (first-byte 8 x2)
+                                 (cons (next-byte x1)
+                                       (cons (next-byte x0)
+                                             bytes)))))
+                        (else ;; (<= x0 #x1fffff)
+                         (let* ((x1 (shift-right-6-bits x0))
+                                (x2 (shift-right-6-bits x1))
+                                (x3 (shift-right-6-bits x2)))
+                           (cons (first-byte 16 x3)
+                                 (cons (next-byte x2)
+                                       (cons (next-byte x1)
+                                             (cons (next-byte x0)
+                                                   bytes))))))))))))
+
+  (define (base64-encode bytes . rest)
+    (let ((code62 (if (pair? rest)
+                      (car rest)
+                      #\+)) ;; encoding of 62
+          (code63 (if (and (pair? rest) (pair? (cdr rest)))
+                      (cadr rest)
+                      #\/)) ;; encoding of 63
+          (pad (if (and (pair? rest) (pair? (cdr rest)) (pair? (cddr rest)))
+                   (caddr rest)
+                   #\=))) ;; padding character (#f = none)
+
+      (define (enc x)
+        (cond ((<= x 25)
+               (integer->char (+ x (char->integer #\A))))
+              ((<= x 51)
+               (integer->char (+ (- x 26) (char->integer #\a))))
+              ((<= x 61)
+               (integer->char (+ (- x 52) (char->integer #\0))))
+              ((= x 62)
+               code62)
+              (else ;; (= x 63)
+               code63)))
+
+      (let loop ((bytes bytes) (chars '()))
+        (if (pair? bytes)
+            (let* ((b0 (car bytes))
+                   (bytes (cdr bytes))
+                   (x0 (enc (quotient b0 4)))
+                   (chars (cons x0 chars)))
+              (if (pair? bytes)
+                  (let* ((b1 (car bytes))
+                         (bytes (cdr bytes))
+                         (x1 (enc (modulo (+ (* b0 16) (quotient b1 16)) 64)))
+                         (chars (cons x1 chars)))
+                    (if (pair? bytes)
+                        (let* ((b2 (car bytes))
+                               (bytes (cdr bytes))
+                               (x2 (enc (modulo (+ (* b1 4) (quotient b2 64)) 64)))
+                               (x3 (enc (modulo b2 64)))
+                               (chars (cons x3 (cons x2 chars))))
+                          (loop bytes chars))
+                        (let* ((x2 (enc (modulo (* b1 4) 64)))
+                               (chars (cons x2 chars))
+                               (chars (if pad (cons pad chars) chars)))
+                          (loop bytes chars))))
+                  (let* ((x1 (enc (modulo (* b0 16) 64)))
+                         (chars (cons x1 chars))
+                         (chars (if pad (cons pad (cons pad chars)) chars)))
+                    (loop bytes chars))))
+            (list->string (reverse chars))))))
+
+  (define (string->classname str)
+    (string-append
+     "_"
+     (base64-encode (utf8-encode (compress-spaces str)) #\_ #\- #f)))
+
   (let ((bbs-tbl (make-table 'test: eq?))
         (proc-tbl (make-table))
         (file-tbl (make-table)))
@@ -4197,12 +4489,17 @@
         (let* ((orig-lbl (instr-comment-get (bb-label-instr bb) 'orig-lbl)))
           (> (length (table-ref versions-table orig-lbl)) 1)))
 
+      (define (bb->cluster bb)
+        (let ((label-count (get-label-count bb)))
+          (and (> label-count 0) 0)))
+
       (define (dump-bb bb)
-        (let ((id (bb-id (bb-lbl-num bb) proc-index))
-              (port-count 0)
-              (rev-rows '())
-              (label-count (vector-ref (get-label-counter bb) 0))
-              (branch-counters (get-branch-counters bb)))
+        (let* ((id (bb-id (bb-lbl-num bb) proc-index))
+               (port-count 0)
+               (rev-rows '())
+               (label-count (get-label-count bb))
+               (cluster (bb->cluster bb))
+               (branch-counters (get-branch-counters bb)))
 
           (define (add-row row)
             (set! rev-rows (cons row rev-rows)))
@@ -4218,15 +4515,29 @@
                   (rest (cdr code-and-rest))
                   (line-id (gen-port)))
 
-              (define (target-id ref)
+              (define (target-id-cluster ref)
+
+                (define (done targ-id targ-bbs targ-lbl)
+                  (cons targ-id
+                        (and (> label-count 0)
+                             (bb->cluster (lbl-num->bb targ-lbl targ-bbs)))))
+
                 (cond ((pair? ref)
                        ;; a label outside of this bbs
                        ;; lbl=(car ref), bbs=(cdr ref)
-                       (let ((info (table-ref bbs-tbl (cdr ref))))
-                         (bb-id (car ref) (cdr info))))
-                      (else
-                       ;; a label in this bbs
-                       (bb-id ref proc-index))))
+                       (let* ((targ-lbl (car ref))
+                              (targ-bbs (cdr ref))
+                              (info (table-ref bbs-tbl targ-bbs)))
+                         (done (bb-id targ-lbl (cdr info))
+                               targ-bbs
+                               targ-lbl)))
+                       (else
+                        ;; a label in this bbs
+                        (let* ((targ-lbl ref)
+                               (targ-bbs bbs))
+                          (done (bb-id targ-lbl proc-index)
+                                targ-bbs
+                                targ-lbl)))))
 
               (define (reference? x)
                 (let ((info (table-ref proc-tbl x #f)))
@@ -4239,19 +4550,23 @@
                            (char=? (string-ref x 0) #\#)
                            (string->number (substring x 1 (string-length x)))))))
 
-              (define (add-edge from side targ-id width color label)
-                (dot-digraph-add-edge!
-                 dd
-                 (dot-digraph-gen-edge
-                  dd
-                  (string-append id ":" from side)
-                  targ-id
-                  (list "g_cfg"
-                        (string-append id "S")
-                        (string-append targ-id "D"))
-                  width
-                  color
-                  label)))
+              (define (add-edge from side targ-id-cluster cls width color label)
+                (let ((targ-id (car targ-id-cluster))
+                      (cluster (cdr targ-id-cluster)))
+                  (dot-digraph-add-edge!
+                   dd
+                   cluster
+                   (dot-digraph-gen-edge
+                    dd
+                    (string-append id ":" from side)
+                    targ-id
+                    (list "g_cfg"
+                          cls
+                          (string-append id "S")
+                          (string-append targ-id "D"))
+                    width
+                    #f ;;color
+                    label))))
 
               (define (add-branch-edge from targ-bbs targ-lbl)
                 (let* ((t (table-ref branch-counters targ-bbs #f))
@@ -4262,12 +4577,16 @@
 
                 (declare (generic))
 
-                (define (edge width color label)
+                (define (edge cls width color label)
                   (add-edge
                    from
                    ":s"
-                   (let ((info (table-ref bbs-tbl targ-bbs)))
-                     (bb-id targ-lbl (cdr info)))
+                   (let* ((info (table-ref bbs-tbl targ-bbs))
+                          (targ-id (bb-id targ-lbl (cdr info)))
+                          (cluster (and (> label-count 0)
+                                        (bb->cluster (lbl-num->bb targ-lbl targ-bbs)))))
+                     (cons targ-id cluster))
+                   cls
                    width
                    color
                    label))
@@ -4279,12 +4598,12 @@
                           (label
                            (number->string count)))
                       (cond ((<= count cbrt)
-                             (edge 3 "#E5AA70" label)) ;; yellowish
+                             (edge "freq1" 3 "#E5AA70" label)) ;; yellowish
                             ((<= count (* cbrt cbrt))
-                             (edge 6 "#FF5733" label)) ;; orangeish
+                             (edge "freq2" 6 "#FF5733" label)) ;; orangeish
                             (else
-                             (edge 9 "#E40303" label)))) ;; redish
-                    (edge 1 #f #f))) ;; black
+                             (edge "freq3" 9 "#E40303" label)))) ;; redish
+                    (edge "freq0" 1 #f #f))) ;; black
 
               (define (add-branch-edges from ref)
                 (cond ((not ref)
@@ -4309,7 +4628,7 @@
                        (add-branch-edge from bbs ref))))
 
               (define (add-ref-edge from side ref)
-                (add-edge from side (target-id ref) 0 #f #f))
+                (add-edge from side (target-id-cluster ref) "ref" 0 #f #f))
 
               (dot-digraph-gen-row
                (dot-digraph-gen-col
@@ -4460,11 +4779,29 @@
             (set! locat-ids (reverse locat-ids))
             (dot-digraph-add-node!
              dd
+             cluster
              (dot-digraph-gen-node
               dd
               (append (list "g_cfg"
                             id
                             (string-append "C" (number->string label-count)))
+                      (let ((new-lbl
+                             (instr-comment-get (bb-label-instr bb) 'new-lbl)))
+                        (if new-lbl
+                            (list (string-append "N" (bb-id new-lbl proc-index)))
+                            '()))
+                      (let ((orig-lbl
+                             (instr-comment-get (bb-label-instr bb) 'orig-lbl)))
+                        (if orig-lbl
+                            (list (string-append "O" (bb-id orig-lbl proc-index)))
+                            '()))
+                      (let ((info
+                             (instr-comment-get (bb-label-instr bb) 'cfg-bb-info2)))
+                        (if info
+                            (if (< (string-length info) 12000)
+                                (list (string->classname info))
+                                (list (string->classname (substring info 0 12000))))
+                            '()))
                       locat-ids)
               id
               (dot-digraph-gen-html-label
@@ -4589,6 +4926,7 @@
                       (table-set! not-defined var #t))
                   (dot-digraph-add-edge!
                    dd
+                   #f
                    (dot-digraph-gen-edge
                     dd
                     #f
@@ -4608,6 +4946,7 @@
              '
              (dot-digraph-add-node!
               dd
+              #f
               (dot-digraph-gen-node
                dd
                '("g_dg")
@@ -4624,6 +4963,7 @@
      (let ((var (car x)))
        (dot-digraph-add-node!
         dd
+        #f
         (dot-digraph-gen-node
          dd
          '("g_dg")
@@ -4723,30 +5063,68 @@
 ;; ----------------------
 
 (define (make-dot-digraph name)
-  (vector '() '() name))
+  (vector (make-table) name))
 
-(define (dot-digraph-nodes dd)            (vector-ref dd 0))
-(define (dot-digraph-nodes-set! dd nodes) (vector-set! dd 0 nodes))
+(define (dot-digraph-clusters dd)               (vector-ref dd 0))
+(define (dot-digraph-clusters-set! dd clusters) (vector-set! dd 0 clusters))
 
-(define (dot-digraph-edges dd)            (vector-ref dd 1))
-(define (dot-digraph-edges-set! dd edges) (vector-set! dd 1 edges))
+(define (dot-digraph-name dd)                   (vector-ref dd 1))
+(define (dot-digraph-name-set! dd name)         (vector-set! dd 1 name))
 
-(define (dot-digraph-name dd)           (vector-ref dd 2))
-(define (dot-digraph-name-set! dd name) (vector-set! dd 2 name))
+(define (make-dot-cluster)
+  (vector '() '()))
 
-(define (dot-digraph-add-node! dd node)
-  (dot-digraph-nodes-set!
-   dd
-   `(,@node
-     ,@(dot-digraph-nodes dd))))
+(define (dot-cluster-nodes dc)            (vector-ref dc 0))
+(define (dot-cluster-nodes-set! dc nodes) (vector-set! dc 0 nodes))
 
-(define (dot-digraph-add-edge! dd edge)
-  (dot-digraph-edges-set!
-   dd
-   `(,@edge
-     ,@(dot-digraph-edges dd))))
+(define (dot-cluster-edges dc)            (vector-ref dc 1))
+(define (dot-cluster-edges-set! dc edges) (vector-set! dc 1 edges))
+
+(define (dot-digraph-get-cluster dd cluster)
+  (let ((t (dot-digraph-clusters dd)))
+    (or (table-ref t cluster #f)
+        (let ((dc (make-dot-cluster)))
+          (table-set! t cluster dc)
+          dc))))
+
+(define (dot-digraph-add-node! dd cluster node)
+  (let ((dc (dot-digraph-get-cluster dd cluster)))
+    (dot-cluster-nodes-set!
+     dc
+     `(,@node
+       ,@(dot-cluster-nodes dc)))))
+
+(define (dot-digraph-add-edge! dd cluster edge)
+  (let ((dc (dot-digraph-get-cluster dd cluster)))
+    (dot-cluster-edges-set!
+     dc
+     `(,@edge
+       ,@(dot-cluster-edges dc)))))
 
 (define (dot-digraph-gen-digraph dd classes)
+
+  (define (add name cluster)
+    (if name
+        `("  subgraph cluster_" ,(number->string name) " { style = filled color = white\n"
+          ,@(dot-cluster-nodes cluster)
+          ,@(dot-cluster-edges cluster)
+          "  }\n")
+        `(,@(dot-cluster-nodes cluster)
+          ,@(dot-cluster-edges cluster))))
+
+  (define (nodes-and-edges)
+    (apply
+     append
+     (map (lambda (name-cluster)
+            (let* ((name (car name-cluster))
+                   (cluster (cdr name-cluster)))
+              (add name cluster)))
+          (let* ((clusters (dot-digraph-clusters dd))
+                 (x (table-ref clusters #f)))
+            (table-set! clusters #f)
+            (append (table->list (dot-digraph-clusters dd))
+                    (list (cons #f x)))))))
+
   `("digraph \"" ,(dot-digraph-name dd) "\" {\n"
     "  graph ["
     "splines = true overlap = false rankdir = \"TD\""
@@ -4757,8 +5135,7 @@
           '())
     "];\n"
     "  node [fontname = \"" ,dot-digraph-font-default "\" shape = \"none\"];\n"
-    ,@(dot-digraph-nodes dd)
-    ,@(dot-digraph-edges dd)
+    ,@(nodes-and-edges)
     "}\n"))
 
 (define (dot-digraph-gen-edge dd src dest classes width color label)
@@ -4969,7 +5346,8 @@
   (define brief? (memq 'brief options))
 
   (define (uninteresting? var)
-    (eq? var ret-var))
+    (or (eq? var ret-var)
+        (eq? var ret-var2)))
 
   (define (format-var var prefix suffix)
 
@@ -5013,6 +5391,8 @@
            `(,suffix))
           ((eq? var ret-var)
            `((,@prefix ,(if brief? "#" "#ret") ,@suffix)))
+          ((eq? var ret-var2)
+           `((,@prefix ,(if brief? "#" "#ret2") ,@suffix)))
           ((var-temp? var)
            `((,@prefix "#" ,@suffix)))
           (else
@@ -5768,6 +6148,9 @@
           (instr-comment-add! label-instr 'label-counter c)
           c))))
 
+(define (get-label-count bb)
+  (vector-ref (get-label-counter bb) 0))
+
 (define (increment-branch-counter state target-bbs target-bb)
   (let* ((branch-instr
           (InterpreterState-current-instruction state))
@@ -5844,7 +6227,7 @@
 
 (define (get-expected-type-at types loc)
   (cond
-    ((reg? loc) 
+    ((reg? loc)
       (get-expected-type-at-register types (reg-num loc)))
     ((stk? loc)
       (get-expected-type-at-frame types (stk-num loc)))
@@ -6016,17 +6399,17 @@
         (lambda (r var)
           (when (frame-live? var frame)
                 (let ((value (InterpreterState-ref state (make-reg r))))
-                  (if (and (eq? var ret-var)
+                  (if (and (or (eq? var ret-var) (eq? var ret-var2))
                            (not (has-type-return? value)))
                     (throw-error (make-reg r) value "label")))))
         (iota (length regs))
         regs)
-      
+
       (for-each
         (lambda (i var)
           (when (frame-live? var frame)
                 (let ((value (InterpreterState-ref state (make-stk i))))
-                  (if (and (eq? var ret-var)
+                  (if (and (or (eq? var ret-var) (eq? var ret-var2))
                            (not (has-type-return? value)))
                     (throw-error (make-stk i) value "label")))))
         (iota (length slots) 1)
@@ -6165,7 +6548,7 @@
     (add-global-primitive rte 'command-line)
 
     (InterpreterState-increment-bb-execution-count! state)
-  
+
     state))
 
 (define (InterpreterState-raise-error state . messages)
@@ -6289,7 +6672,7 @@
           origin: (or (instr-comment-get (bb-label-instr bb) 'orig-lbl) (error "no orig-lbl" bb))
           bbs: (object->string (InterpreterState-get-bbs-name state bbs))
           source: (object->string (object->string (source->expression (node-source (instr-comment-get (bb-label-instr bb) 'node)))))
-          usage: (get-label-counter bb)
+          usage: (get-label-count bb)
           context: (object->string (format-concatenate (format-gvm-instr-frame (bb-label-instr bb) '())))
           predecessors: (map convert-lbl (bb-precedents bb))
           successors: (map convert-lbl (bb-successors bb))
@@ -6593,7 +6976,7 @@
         (stack (InterpreterState-stack state)))
     (let loop ((i (nb-args-on-stack nparams))
                (params params))
-      (if (> i 0)    
+      (if (> i 0)
           (begin
             (Stack-push! stack (car params))
             (loop (- i 1) (cdr params)))
@@ -6874,7 +7257,7 @@
     (init-Stack)                      ;; stack
     (make-table)                      ;; global env
     (make-gvm-jumpable-primitives)    ;; jumpable primitive table
-    #f))                              ;; state           
+    #f))                              ;; state
 
 (define (RTE-registers-ref rte i) (stretchable-vector-ref (RTE-registers rte) i))
 (define (RTE-registers-set! rte i v) (stretchable-vector-set! (RTE-registers rte) i v))
@@ -6885,7 +7268,7 @@
          (g (table-ref (RTE-global-env rte) name sentinel)))
     (if (eq? g sentinel) (table-ref (make-prim-proc-table) (symbol->string name)) g)))
 (define (RTE-global-set! rte name v) (table-set! (RTE-global-env rte) name v))
-  
+
 (define (RTE-param-set! rte nparams i param)
   (let* ((nb-param-registers (min nparams backend-nb-args-in-registers))
          (nb-param-frames (- nparams nb-param-registers))

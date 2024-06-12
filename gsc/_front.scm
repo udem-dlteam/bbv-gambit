@@ -3635,9 +3635,9 @@
                                                           (proc-obj-primitive? val))))))
                                     (current-frame
                                      (if return-lbl
-                                         (let ((ret-v (make-temp-var 0)))
-                                           (put-var return-addr-reg ret-v)
-                                           (varset-adjoin liv ret-v))
+                                         (begin
+                                           (put-var return-addr-reg ret-var2)
+                                           (varset-adjoin liv ret-var2))
                                          liv))
                                     (node->comment node))))
 

@@ -7533,10 +7533,8 @@
 (define (type-top-length-range? fixnum-range)
   (let ((lo (type-fixnum-range-lo fixnum-range))
         (hi (type-fixnum-range-hi fixnum-range)))
-    (and (or (eqv? lo 0)
-             (and (length-bound? lo) (= 0 (length-bound-offset lo))))
-         (or (eqv? hi '<=)
-             (and (length-bound? hi) (= 0 (length-bound-offset hi)))))))
+    (and (eqv? lo 0)
+         (eqv? hi '<=))))
 
 (define (make-type-motley mut-bitset not-mut-bitset length-range fixnum-range)
   (vector (bitwise-and (bitwise-not type-undefined-mutability-bitset) mut-bitset)
@@ -8154,11 +8152,12 @@
   (define top "T")
   (define bot "_")
 
-  (cond ((type-top? type)
-         (list top))
-        ((type-bot? type)
-         (list bot))
-        ((type-singleton? type)
+  (define length-open  "[")
+  (define length-close "]")
+;  (define length-open  "\x27e6;")
+;  (define length-close "\x27e7;")
+
+  (cond ((type-singleton? type)
          (list (format-gvm-obj (type-singleton-val type) #t)))
         ((type-motley? type)
          (let* ((result
@@ -8209,9 +8208,9 @@
              (let ((object (length-bound-object bound))
                    (offset (length-bound-offset bound)))
                (string-concatenate
-                (cons "\x27e6;"
+                (cons length-open
                       (cons (if object (number->string object) "v")
-                            (cons "\x27e7;"
+                            (cons length-close
                                   (cond ((= offset 0)
                                          '())
                                         ((< offset 0)
@@ -8258,51 +8257,65 @@
                                      (number->string hi)))))
                       #t))))
 
-           (element '("()") type-null-bit)
-           (element '("vd") type-void-bit)
-           (element '("ef") type-eof-bit)
-           (element '("ab") type-absent-bit)
+           (define (general-case)
 
-           (let ((f (not (eqv? 0 (bitwise-and bitset type-false-bit))))
-                 (t (not (eqv? 0 (bitwise-and bitset type-true-bit)))))
-             (cond ((and f t)
-                    (pos '("bl")))
-                   (f
-                    (pos '("#f"))
-                    (neg '("#t")))
-                   (t
-                    (neg '("#f"))
-                    (pos '("#t")))
-                   (else
-                    (neg '("bl")))))
+             (element '("()") type-null-bit)
+             (element '("vd") type-void-bit)
+             (element '("ef") type-eof-bit)
+             (element '("ab") type-absent-bit)
 
-           (if (format-fixnum-range (type-motley-fixnum-range type))
-               (display-top-for-bitset?))
+             (let ((f (not (eqv? 0 (bitwise-and bitset type-false-bit))))
+                   (t (not (eqv? 0 (bitwise-and bitset type-true-bit)))))
+               (cond ((and f t)
+                      (pos '("bl")))
+                     (f
+                      (pos '("#f"))
+                      (neg '("#t")))
+                     (t
+                      (neg '("#f"))
+                      (pos '("#t")))
+                     (else
+                      (neg '("bl")))))
 
-           (element '("bn")   type-bignum-bit)
-           (element '("rn")   type-ratnum-bit)
-           (element '("fl")   type-flonum-bit)
-           (element '("cn")   type-cpxnum-bit)
-           (element '("ch")   type-char-bit)
-           (element '("sy")   type-symbol-bit)
-           (element '("kw")   type-keyword-bit)
-           (element '("st")   type-string-bit)
-           (element '("vc")   type-vector-bit)
-           (element '("u8v")  type-u8vector-bit)
-           (element '("s8v")  type-s8vector-bit)
-           (element '("u16v") type-u16vector-bit)
-           (element '("s16v") type-s16vector-bit)
-           (element '("u32v") type-u32vector-bit)
-           (element '("s32v") type-s32vector-bit)
-           (element '("u64v") type-u64vector-bit)
-           (element '("s64v") type-s64vector-bit)
-           (element '("f32v") type-f32vector-bit)
-           (element '("f64v") type-f64vector-bit)
-           (element '("pa")   type-pair-bit)
-           (element '("pr")   type-procedure-bit)
-           (element '("bx")   type-box-bit)
-           (element '("rt")   type-return-bit)
-           (element '("ot")   type-other-bit)
+             (if (format-fixnum-range (type-motley-fixnum-range type))
+                 (display-top-for-bitset?))
+
+             (element '("bn")   type-bignum-bit)
+             (element '("rn")   type-ratnum-bit)
+             (element '("fl")   type-flonum-bit)
+             (element '("cn")   type-cpxnum-bit)
+             (element '("ch")   type-char-bit)
+             (element '("sy")   type-symbol-bit)
+             (element '("kw")   type-keyword-bit)
+             (element '("st")   type-string-bit)
+             (element '("vc")   type-vector-bit)
+             (element '("u8v")  type-u8vector-bit)
+             (element '("s8v")  type-s8vector-bit)
+             (element '("u16v") type-u16vector-bit)
+             (element '("s16v") type-s16vector-bit)
+             (element '("u32v") type-u32vector-bit)
+             (element '("s32v") type-s32vector-bit)
+             (element '("u64v") type-u64vector-bit)
+             (element '("s64v") type-s64vector-bit)
+             (element '("f32v") type-f32vector-bit)
+             (element '("f64v") type-f64vector-bit)
+             (element '("pa")   type-pair-bit)
+             (element '("pr")   type-procedure-bit)
+             (element '("bx")   type-box-bit)
+             (element '("rt")   type-return-bit)
+             (element '("ot")   type-other-bit))
+
+           (cond ((type-bot? type)
+                  (add (list bot)))
+                 ((and (type-top-fixnum-range? (type-motley-fixnum-range type))
+                       (eqv? (bitwise-ior mut-bitset
+                                          type-undefined-mutability-bitset)
+                             type-top-bitset)
+                       (eqv? not-mut-bitset
+                             type-top-bitset))
+                  (add (list top)))
+                 (else
+                  (general-case)))
 
            (if (not (eqv? 0 (bitwise-and
                              (bitwise-not type-undefined-mutability-bitset)
