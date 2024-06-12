@@ -1553,7 +1553,7 @@
                        "var->opnd, variable is not accessible:" (var-name var)))))))))))))
 
 (define (node->comment node)
-  (let ((x (make-comment)))
+  (let ((x (make-comment-empty)))
     (comment-put! x 'node node)
     x))
 

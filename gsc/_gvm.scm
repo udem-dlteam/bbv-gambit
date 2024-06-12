@@ -514,6 +514,7 @@
 (define (gvm-instr-types-set! gvm-instr x) (vector-set! gvm-instr 2 x))
 (define (gvm-instr-comment gvm-instr) (vector-ref gvm-instr 3))
 (define (gvm-instr-comment-set! gvm-instr x) (vector-set! gvm-instr 3 x))
+(define (gvm-instr-comment-copy gvm-instr) (make-comment (comment-alist (gvm-instr-comment gvm-instr))))
 
 (define (gvm-instr-types-set!-returning-instr gvm-instr x)
   (gvm-instr-types-set! gvm-instr x)
@@ -606,11 +607,17 @@
     (else
      #f)))
 
-(define (make-comment)
-  (cons 'comment '()))
+(define (make-comment-empty)
+  (make-comment '()))
+
+(define (make-comment alist)
+  (cons 'comment alist))
+
+(define (comment-alist comment)
+  (cdr comment))
 
 (define (comment-put! comment name value)
-  (set-cdr! comment (cons (cons name value) (cdr comment))))
+  (set-cdr! comment (cons (cons name value) (comment-alist comment))))
 
 (define (comment-get comment name)
   (and comment
@@ -620,8 +627,8 @@
 (define (instr-comment-add! gvm-instr name val)
   (gvm-instr-comment-set!
    gvm-instr
-   (cons 'comment
-         (cons (cons name val) (cdr (gvm-instr-comment gvm-instr))))))
+   (make-comment
+    (cons (cons name val) (comment-alist (gvm-instr-comment gvm-instr))))))
 
 (define (instr-comment-get gvm-instr name)
   (comment-get (gvm-instr-comment gvm-instr) name))
@@ -681,7 +688,7 @@
           (make-label-simple
            (replacement-lbl-num (label-lbl-num instr))
            (gvm-instr-frame instr)
-           (gvm-instr-comment instr)))
+           (gvm-instr-comment-copy instr)))
 
          ((entry)
           (make-label-entry
@@ -692,25 +699,25 @@
            (label-entry-rest? instr)
            (label-entry-closed? instr)
            (gvm-instr-frame instr)
-           (gvm-instr-comment instr)))
+           (gvm-instr-comment-copy instr)))
 
          ((return)
           (make-label-return
            (replacement-lbl-num (label-lbl-num instr))
            (gvm-instr-frame instr)
-           (gvm-instr-comment instr)))
+           (gvm-instr-comment-copy instr)))
 
          ((task-entry)
           (make-label-task-entry
            (replacement-lbl-num (label-lbl-num instr))
            (gvm-instr-frame instr)
-           (gvm-instr-comment instr)))
+           (gvm-instr-comment-copy instr)))
 
          ((task-return)
           (make-label-task-return
            (replacement-lbl-num (label-lbl-num instr))
            (gvm-instr-frame instr)
-           (gvm-instr-comment instr)))
+           (gvm-instr-comment-copy instr)))
 
          (else
           (compiler-internal-error
@@ -722,20 +729,20 @@
         (map clone-gvm-opnd (apply-opnds instr))
         (clone-gvm-opnd (apply-loc instr))
         (gvm-instr-frame instr)
-        (gvm-instr-comment instr)))
+        (gvm-instr-comment-copy instr)))
 
       ((copy)
        (make-copy
         (clone-gvm-opnd (copy-opnd instr))
         (clone-gvm-opnd (copy-loc instr))
         (gvm-instr-frame instr)
-        (gvm-instr-comment instr)))
+        (gvm-instr-comment-copy instr)))
 
       ((close)
        (make-close
         (map clone-closure-parms (close-parms instr))
         (gvm-instr-frame instr)
-        (gvm-instr-comment instr)))
+        (gvm-instr-comment-copy instr)))
 
       ((ifjump)
        (make-ifjump
@@ -745,7 +752,7 @@
         (replacement-lbl-num (ifjump-false instr))
         (ifjump-poll? instr)
         (gvm-instr-frame instr)
-        (gvm-instr-comment instr)))
+        (gvm-instr-comment-copy instr)))
 
       ((switch)
        (make-switch
@@ -758,7 +765,7 @@
         (replacement-lbl-num (switch-default instr))
         (switch-poll? instr)
         (gvm-instr-frame instr)
-        (gvm-instr-comment instr)))
+        (gvm-instr-comment-copy instr)))
 
       ((jump)
        (make-jump
@@ -768,7 +775,7 @@
         (jump-poll? instr)
         (jump-safe? instr)
         (gvm-instr-frame instr)
-        (gvm-instr-comment instr)))
+        (gvm-instr-comment-copy instr)))
 
       (else
        (compiler-internal-error
@@ -1007,7 +1014,7 @@
                           (make-label-simple
                            lbl2
                            (gvm-instr-frame last-jump/ret)
-                           (gvm-instr-comment dest-label-instr)))
+                           (gvm-instr-comment-copy dest-label-instr)))
                          new-bbs)))
                   (bb-branch-instr-set!
                    new-bb
@@ -1020,7 +1027,7 @@
                      #f
                      #f
                      (gvm-instr-frame last-jump/ret)
-                     (gvm-instr-comment last-jump/ret))))
+                     (gvm-instr-comment-copy last-jump/ret))))
                   (bb-branch-instr-set! new-bb2 new-branch-instr)
 #;
 (if (memv (bb-lbl-num new-bb) '(33 53))
@@ -1068,7 +1075,7 @@
                     new-false
                     new-poll?
                     (gvm-instr-frame branch)
-                    (gvm-instr-comment branch)))))))
+                    (gvm-instr-comment-copy branch)))))))
 
           ((switch) ;; branch is a 'switch'
            (set! lbl-changed? #f)
@@ -1095,7 +1102,7 @@
                     new-default
                     new-poll?
                     (gvm-instr-frame branch)
-                    (gvm-instr-comment branch)))))))
+                    (gvm-instr-comment-copy branch)))))))
 
           ((jump) ;; branch is a 'jump'
            (let ((dest-lbl (jump-lbl? branch)))
@@ -1192,7 +1199,7 @@
                                     new-false
                                     new-poll?
                                     new-frame
-                                    (gvm-instr-comment last-branch))
+                                    (gvm-instr-comment-copy last-branch))
                                    new-types))))
 
                               ((switch)
@@ -1218,7 +1225,7 @@
                                     new-default
                                     new-poll?
                                     new-frame
-                                    (gvm-instr-comment last-branch))
+                                    (gvm-instr-comment-copy last-branch))
                                    new-types))))
 
                               ((jump)
@@ -1251,7 +1258,7 @@
                                         new-poll?
                                         (jump-safe? last-branch)
                                         new-frame
-                                        (gvm-instr-comment last-branch))
+                                        (gvm-instr-comment-copy last-branch))
                                        new-types)))))
 
                               (else
@@ -1288,7 +1295,7 @@
                                      new-poll?
                                      (jump-safe? branch)
                                      new-frame
-                                     (gvm-instr-comment branch))
+                                     (gvm-instr-comment-copy branch))
                                     new-types))))))))))))
 
           (else
@@ -1514,7 +1521,7 @@
                                       (types-merge types-join1 types-join2)
                                       frame-common))
                                     (comment-common
-                                     (gvm-instr-comment (car tail1)))
+                                     (gvm-instr-comment-copy (car tail1)))
                                     (bb-common
                                      (make-bb
                                       (gvm-instr-types-set!-returning-instr
@@ -1818,7 +1825,7 @@
                    (ifjump-poll? branch) ;; poll?
                    #f ;; safe?
                    (gvm-instr-frame branch) ;; frame
-                   (gvm-instr-comment branch) ;; comment
+                   (gvm-instr-comment-copy branch) ;; comment
                    ))
                 (set! changed? #t)
                 (loop new-bb)))
@@ -2235,8 +2242,8 @@
                   (precedents
                    (bb-precedents bb))
                   (old
-                   (instr-comment-get (gvm-instr-comment label)
-                                'doms))
+                   (instr-comment-get (gvm-instr-comment-copy label)
+                                      'doms))
                   (new
                    (intersect-multi (bb-lbl-num bb)
                                     (map (lambda (p)
@@ -2781,7 +2788,7 @@
                        (make-label-simple
                         new-lbl
                         (gvm-instr-frame gvm-instr)
-                        (gvm-instr-comment gvm-instr)))
+                        (gvm-instr-comment-copy gvm-instr)))
 
                       ((entry)
                         (make-label-entry
@@ -2792,25 +2799,25 @@
                         (label-entry-rest? gvm-instr)
                         (label-entry-closed? gvm-instr)
                         (gvm-instr-frame gvm-instr)
-                        (gvm-instr-comment gvm-instr)))
+                        (gvm-instr-comment-copy gvm-instr)))
 
                       ((return)
                         (make-label-return
                         new-lbl
                         (gvm-instr-frame gvm-instr)
-                        (gvm-instr-comment gvm-instr)))
+                        (gvm-instr-comment-copy gvm-instr)))
 
                       ((task-entry)
                         (make-label-task-entry
                         new-lbl
                         (gvm-instr-frame gvm-instr)
-                        (gvm-instr-comment gvm-instr)))
+                        (gvm-instr-comment-copy gvm-instr)))
 
                       ((task-return)
                         (make-label-task-return
                         new-lbl
                         (gvm-instr-frame gvm-instr)
-                        (gvm-instr-comment gvm-instr)))
+                        (gvm-instr-comment-copy gvm-instr)))
 
                       (else
                         (compiler-internal-error
@@ -2870,7 +2877,7 @@
                           (type-singleton->new-opnd dst-type)
                           loc
                           (gvm-instr-frame gvm-instr)
-                          (gvm-instr-comment gvm-instr))
+                          (gvm-instr-comment-copy gvm-instr))
                           (let ((new-opnds2
                                 (map (lambda (arg)
                                         (let ((arg-type (call-arg-val arg)))
@@ -2887,7 +2894,7 @@
                             new-opnds2
                             loc
                             (gvm-instr-frame gvm-instr)
-                            (gvm-instr-comment gvm-instr))))))
+                            (gvm-instr-comment-copy gvm-instr))))))
                 (gvm-instr-types-set! new-instr types-after)
                 new-instr))
 
@@ -2920,7 +2927,7 @@
                       (opnd-constantify opnd new-opnd types-before)
                       loc
                       (gvm-instr-frame gvm-instr)
-                      (gvm-instr-comment gvm-instr))))
+                      (gvm-instr-comment-copy gvm-instr))))
                 (gvm-instr-types-set! new-instr types-after)
                 new-instr))
 
@@ -2997,7 +3004,7 @@
                                 (make-close
                                   (reverse rev-parms)
                                   (gvm-instr-frame gvm-instr)
-                                  (gvm-instr-comment gvm-instr))))
+                                  (gvm-instr-comment-copy gvm-instr))))
                             (gvm-instr-types-set! new-instr
                                                   (resized-frame-types-remove-dead
                                                     (gvm-instr-frame gvm-instr)
@@ -3065,7 +3072,7 @@
                                       false-lbl
                                       (ifjump-poll? gvm-instr)
                                       (gvm-instr-frame gvm-instr)
-                                      (gvm-instr-comment gvm-instr))
+                                      (gvm-instr-comment-copy gvm-instr))
                                       (make-jump
                                       (make-lbl true-lbl)
                                       #f
@@ -3073,7 +3080,7 @@
                                       (ifjump-poll? gvm-instr)
                                       #f
                                       (gvm-instr-frame gvm-instr)
-                                      (gvm-instr-comment gvm-instr)))
+                                      (gvm-instr-comment-copy gvm-instr)))
                                   (if false-lbl
                                       (make-jump
                                       (make-lbl false-lbl)
@@ -3082,7 +3089,7 @@
                                       (ifjump-poll? gvm-instr)
                                       #f
                                       (gvm-instr-frame gvm-instr)
-                                      (gvm-instr-comment gvm-instr))
+                                      (gvm-instr-comment-copy gvm-instr))
                                       (error "impossible true and false outcomes from test" (proc-obj-name test))))))
                           (make-ifjump
                           test
@@ -3093,7 +3100,7 @@
                                   types-after)
                           (ifjump-poll? gvm-instr)
                           (gvm-instr-frame gvm-instr)
-                          (gvm-instr-comment gvm-instr)))))
+                          (gvm-instr-comment-copy gvm-instr)))))
                 (gvm-instr-types-set! new-instr types-after)
                 new-instr))
 
@@ -3184,7 +3191,7 @@
                           #f
                           (jump-safe? gvm-instr))
                       (gvm-instr-frame gvm-instr)
-                      (gvm-instr-comment gvm-instr))))
+                      (gvm-instr-comment-copy gvm-instr))))
                 (gvm-instr-types-set! new-instr types-after)
                 new-instr)))))
 
@@ -3316,7 +3323,7 @@
                                 (get-version-types new-lbl)))
               (lbls-to-merge (map cdr versions-to-merge)))
 
-        (if '(or (equal? lbls-to-merge '(27 39)) (equal? lbls-to-merge '(39 27)))
+        (if #f ;; use #t to show which versions are being merged
             (begin
               (println "-----------------------------------")
               (pp (list 'merge: lbls-to-merge))
@@ -3344,7 +3351,7 @@
                (table-set! lbl-mapping lbl new-lbl)
                (reachability-debug lbl 'merge new-lbl '<-)
                (reachability-debug new-lbl 'merge lbl '->)
-               (if (not (eq? lbl new-lbl))
+               (if (not (eqv? lbl new-lbl))
                    (begin
                      (replace!
                       BFSTree lbl new-lbl
@@ -3364,9 +3371,10 @@
         (reachability-debug new-lbl 'merged 'created)
 
         (for-each
-          (lambda (type-lbl) (if (not (eq? (car type-lbl) new-lbl))
-                                 (bb-versions-active-lbl-remove! bb-versions (car type-lbl))))
-          versions-to-merge)
+         (lambda (type-lbl)
+           (if (not (eqv? (cdr type-lbl) new-lbl))
+               (bb-versions-active-lbl-remove! bb-versions (car type-lbl))))
+         versions-to-merge)
 
         (track-version-history lbl (list 'merge #f details)) ;; track history of versions
 
