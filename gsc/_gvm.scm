@@ -2217,12 +2217,13 @@
   (let ((event-creator (string->symbol (string-append "add-version-history-event*:" (symbol->string event-name)))))
     `(if track-version-history-for-visualization-tool? (add-version-history-event* (,event-creator bbs-proc-name ,@args)))))
 
-(define (add-version-history-event*:create bbs-name orig-lbl id context)
+(define (add-version-history-event*:create bbs-name orig-lbl id from-lbl context)
   (list->table
     `((event . create)
       (bbs . ,(object->string bbs-name))
       (origin . ,orig-lbl)
       (id . ,id)
+      (from . ,from-lbl)
       (context . ,(object->string context)))))
 
 (define (add-version-history-event*:merge bbs-name orig-lbl merged-lbls result-lbl context)
@@ -2608,7 +2609,7 @@
               most-recent-version)
             (let* ((new-lbl (or most-recent-version (new-lbl! lbl))))
               (if (not most-recent-version)
-                  (add-version-history-event create lbl new-lbl
+                  (add-version-history-event create lbl new-lbl from-lbl
                     (frame->string (bb-entry-frame bb) version-types)))
               (bb-versions-active-lbl-add! bb-versions version-types new-lbl)
               (queue-put! work-queue (make-queue-task bb new-lbl))
