@@ -2532,7 +2532,7 @@
                   (types-lbl-alist (bb-versions-active-lbl->list bb-versions sort?: #t))
                   (text-grid (bb-versions-text-grid bb-versions))
                   (version-index-tbl (bb-versions-index-table bb-versions))
-                  (options '(new))
+                  (options '(brief new))
                   (col (max 1 (text-grid-cols text-grid)))
                   (op (car operation))
                   (from-lbl (cadr operation)))
@@ -3361,12 +3361,13 @@
                             (set! killed (cons lbl killed)))
                         (onkill lbl cause)))))))
            versions-to-merge)
-          (for-each
-           (lambda (lbl)
-             (track-version-history
-              (orig-lbl-mapping-ref lbl)
-              (list 'gc lbl))) ;; track history of versions
-           killed))
+          (if #f ;; use #t to generate gc events
+              (for-each
+               (lambda (lbl)
+                 (track-version-history
+                  (orig-lbl-mapping-ref lbl)
+                  (list 'gc lbl))) ;; track history of versions
+               killed)))
 
         (reachability-debug new-lbl 'merged 'created)
 
@@ -3376,7 +3377,8 @@
                (bb-versions-active-lbl-remove! bb-versions (car type-lbl))))
          versions-to-merge)
 
-        (track-version-history lbl (list 'merge #f details)) ;; track history of versions
+;;        (track-version-history lbl (list 'merge #f details)) ;; track history of versions
+        (track-version-history lbl (list 'merge #f)) ;; track history of versions
 
         (queue-put! work-queue (make-queue-task bb new-lbl))))
 
@@ -4273,7 +4275,15 @@
             (display (c-proc-body x) port)
             (newline port)))))
 
-  (for-each dump-proc (reachable-procs procs)))
+  (let* ((only-procs
+          #f)
+         (rprocs
+          (keep
+           (lambda (p)
+             (or (eq? only-procs #f)
+                 (member (proc-obj-name p) only-procs)))
+           (reachable-procs procs))))
+    (for-each dump-proc rprocs)))
 
 (define (virtual.dump-cfg gvm-interpret-ctx port)
 
@@ -4310,27 +4320,51 @@
       (vector-ref colors (modulo orig-lbl (vector-length colors)))
       node-info-default-bgcolor))
 
-  (define (compress-spaces str)
-    (define max-run 32)
-    (define (run len)
-      (if (= len 1)
+  (define (compress str)
+
+    (define max-run 31)
+
+    (define (run spaces)
+      (if (= spaces 1)
           #\space
-          (integer->char (if (<= len 11) (- len 2) (- len 1)))))
-    (list->string
-     (reverse
-      (let loop ((len 0) (end 0) (parts '()))
-        (if (< end (string-length str))
-            (let ((c (string-ref str end)))
-              (if (char=? c #\space)
-                  (if (< len max-run)
-                      (loop (+ len 1) (+ end 1) parts)
-                      (loop 0 end (cons (run len) parts)))
-                  (if (= len 0)
-                      (loop 0 (+ end 1) (cons c parts))
-                      (loop 0 (+ end 1) (cons c (cons (run len) parts))))))
-            (if (= len 0)
-                parts
-                (cons (run len) parts)))))))
+          (integer->char (if (<= spaces 11) (- spaces 2) (- spaces 1)))))
+
+    (let loop ((spaces 0) (end 0) (prev-colon #f) (parts '()))
+
+      (define (add-run spaces)
+        (if (= spaces 0)
+            parts
+            (cons (run spaces) parts)))
+
+      (define (add-char c)
+        (loop 0
+              (+ end 1)
+              (cond ((char=? c #\:) end)
+                    ((char=? c #\newline) #f)
+                    (else prev-colon))
+              (cons c (add-run spaces))))
+
+      (if (< end (string-length str))
+          (let ((c (string-ref str end)))
+
+            (cond ((char=? c #\space)
+                   (if (< spaces max-run)
+                       (loop (+ spaces 1) (+ end 1) prev-colon parts)
+                       (loop 0 end prev-colon (cons (run spaces) parts))))
+                  ((and prev-colon (char=? c #\:))
+                   (let ((end2 (+ end (- end prev-colon))))
+                     (if (and (<= end2 (string-length str))
+                              (string=? (substring str prev-colon end)
+                                        (substring str end end2)))
+                         (loop 0
+                               end2
+                               end
+                               (cons (integer->char 31) (add-run spaces)))
+                         (add-char c))))
+                  (else
+                   (add-char c))))
+
+          (list->string (reverse (add-run spaces))))))
 
   (define (utf8-encode str)
 
@@ -4427,10 +4461,13 @@
                     (loop bytes chars))))
             (list->string (reverse chars))))))
 
-  (define (string->classname str)
-    (string-append
-     "_"
-     (base64-encode (utf8-encode (compress-spaces str)) #\_ #\- #f)))
+  (define (string->classname str limit)
+    (let* ((cstr1 (compress str))
+           (cstr2 (if (<= (string-length cstr1) limit)
+                      cstr1
+                      (string-append (substring cstr1 0 (- limit 4))
+                                     "\n..."))))
+      (string-append "_" (base64-encode (utf8-encode cstr2) #\_ #\- #f))))
 
   (let ((bbs-tbl (make-table 'test: eq?))
         (proc-tbl (make-table))
@@ -4535,10 +4572,11 @@
                        ;; lbl=(car ref), bbs=(cdr ref)
                        (let* ((targ-lbl (car ref))
                               (targ-bbs (cdr ref))
-                              (info (table-ref bbs-tbl targ-bbs)))
-                         (done (bb-id targ-lbl (cdr info))
-                               targ-bbs
-                               targ-lbl)))
+                              (info (table-ref bbs-tbl targ-bbs #f)))
+                         (and info
+                              (done (bb-id targ-lbl (cdr info))
+                                    targ-bbs
+                                    targ-lbl))))
                        (else
                         ;; a label in this bbs
                         (let* ((targ-lbl ref)
@@ -4586,18 +4624,19 @@
                 (declare (generic))
 
                 (define (edge cls width color label)
-                  (add-edge
-                   from
-                   ":s"
-                   (let* ((info (table-ref bbs-tbl targ-bbs))
-                          (targ-id (bb-id targ-lbl (cdr info)))
-                          (cluster (and (> label-count 0)
-                                        (bb->cluster (lbl-num->bb targ-lbl targ-bbs)))))
-                     (cons targ-id cluster))
-                   cls
-                   width
-                   color
-                   label))
+                  (let ((info (table-ref bbs-tbl targ-bbs #f)))
+                    (and info
+                         (add-edge
+                          from
+                          ":s"
+                          (let* ((targ-id (bb-id targ-lbl (cdr info)))
+                                 (cluster (and (> label-count 0)
+                                               (bb->cluster (lbl-num->bb targ-lbl targ-bbs)))))
+                            (cons targ-id cluster))
+                          cls
+                          width
+                          color
+                          label))))
 
                 (if (> count 0)
                     (let ((cbrt
@@ -4636,7 +4675,9 @@
                        (add-branch-edge from bbs ref))))
 
               (define (add-ref-edge from side ref)
-                (add-edge from side (target-id-cluster ref) "ref" 0 #f #f))
+                (let ((targ-id-cluster (target-id-cluster ref)))
+                  (and target-id-cluster
+                       (add-edge from side targ-id-cluster "ref" 0 #f #f))))
 
               (dot-digraph-gen-row
                (dot-digraph-gen-col
@@ -4806,9 +4847,7 @@
                       (let ((info
                              (instr-comment-get (bb-label-instr bb) 'cfg-bb-info2)))
                         (if info
-                            (if (< (string-length info) 12000)
-                                (list (string->classname info))
-                                (list (string->classname (substring info 0 12000))))
+                            (list (string->classname info 12000))
                             '()))
                       locat-ids)
               id
@@ -4876,8 +4915,14 @@
 
       (bbs-for-each-bb dump-bb bbs))
 
-    (let ((rprocs
-           (reachable-procs procs)))
+    (let* ((only-procs
+            #f)
+           (rprocs
+            (keep
+             (lambda (p)
+               (or (eq? only-procs #f)
+                   (member (proc-obj-name p) only-procs)))
+             (reachable-procs procs))))
 
       (let loop1 ((i 0) (lst rprocs))
         (if (pair? lst)
