@@ -10116,19 +10116,28 @@
                                                  (cdr lst)))))))))))))))))
 
 (define (type-narrow-fx= tctx type1 type2)
-  (let* ((inter
-          (type-intersection tctx type1 type2))
-         (inter
-          (cond ((type-eqv? inter type1) type1)
-                ((type-eqv? inter type2) type2)
-                (else                    inter)))
-         (result
+  (if (and (type-singleton? type1)
+           (type-singleton? type2))
+      (if (type-singleton-eqv? type1 type2)
           (cons
-           (if (type-bot? inter) ;; types do not intersect?
-               #f ;; true branch impossible
-               (list inter inter))
-           (list type1 type2))))
-    result))
+           (list type1 type2)
+           #f) ;; false branch impossible
+          (cons
+           #f ;; true branch impossible
+           (list type1 type2)))
+      (let* ((inter
+              (type-intersection tctx type1 type2))
+             (inter
+              (cond ((type-eqv? inter type1) type1)
+                    ((type-eqv? inter type2) type2)
+                    (else                    inter)))
+             (result
+              (cons
+               (if (type-bot? inter) ;; types do not intersect?
+                   #f                ;; true branch impossible
+                   (list inter inter))
+               (list type1 type2))))
+        result)))
 
 (define (type-fixnum-empty? lo hi)
   (declare (generic))

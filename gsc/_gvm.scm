@@ -890,7 +890,7 @@
 
 (define (bbs-purify bbs proc)
 
-  (define purify? #t)
+  (define purify? #f)
 
   (define (purify-step bbs0)
     (let* ((bbs1 (bbs-remove-jump-cascades bbs0))
@@ -3305,7 +3305,7 @@
       (let* ((lbl (bb-lbl-num bb))
               (bb-versions (get-bb-versions bb))
               (types-lbl-vect (list->vector (bb-versions-active-lbl->list bb-versions)))
-              (in-out-details (find-merge-candidates tctx types-lbl-vect))
+              (in-out-details (select-versions-to-merge tctx types-lbl-vect))
               (in (vector-ref in-out-details 0))
               (out (vector-ref in-out-details 1))
               (details (vector-ref in-out-details 2))
@@ -3377,8 +3377,8 @@
                (bb-versions-active-lbl-remove! bb-versions (car type-lbl))))
          versions-to-merge)
 
-;;        (track-version-history lbl (list 'merge #f details)) ;; track history of versions
-        (track-version-history lbl (list 'merge #f)) ;; track history of versions
+        (track-version-history lbl (list 'merge #f details)) ;; track history of versions
+;;        (track-version-history lbl (list 'merge #f)) ;; track history of versions
 
         (queue-put! work-queue (make-queue-task bb new-lbl))))
 
@@ -3439,6 +3439,9 @@
                                  (loop1 (+ col 1)))))
                          (text-grid-display text-grid port)
                          (newline port)))
+                   (write-bb (lbl-num->bb orig-lbl bbs) '() port)
+                   (newline port)
+                   (newline port)
                    (write-bb bb '(new) port)))))
          (instr-comment-add!
           (bb-label-instr bb)
@@ -3691,18 +3694,168 @@
             (loop (+ i locenv-entry-size) (+ acc dist)))
           (+ (* acc 10000) (quotient 9999 (+ 1 ut1 ut2)))))))
 
-(define types-distance #f)
+(define select-versions-to-merge #f)
 
 (define (set-bbv-merge-strategy! opt)
-  (set! types-distance
+  (set! select-versions-to-merge
     (case opt
-      ((entropy) types-distance-entropy)
-      ((sametypes) types-distance-sametypes)
-      ((linear) types-distance-linear)
-      ((feeley #f) types-distance-feeley)
-      (else (error "unknown bbv-merge-strategy strategy" opt)))))
+      ((entropy)
+       (lambda (tctx types-lbl-vect)
+         (select-versions-to-merge-using-distance
+          tctx
+          types-lbl-vect
+          types-distance-entropy)))
+      ((sametypes)
+       (lambda (tctx types-lbl-vect)
+         (select-versions-to-merge-using-distance
+          tctx
+          types-lbl-vect
+          types-distance-sametypes)))
+      ((linear)
+       (lambda (tctx types-lbl-vect)
+         (select-versions-to-merge-using-distance
+          tctx
+          types-lbl-vect
+          types-distance-linear)))
+      ((feeley #f) ;; add #f here to default to feeley
+       (lambda (tctx types-lbl-vect)
+         (select-versions-to-merge-using-distance
+          tctx
+          types-lbl-vect
+          types-distance-feeley)))
+      ((#f)
+       select-versions-to-merge-considering-merge-result)
+      (else
+       (error "unknown bbv-merge-strategy strategy" opt)))))
 
-(define (find-merge-candidates tctx types-lbl-vect)
+(define (select-versions-to-merge-considering-merge-result tctx types-lbl-vect)
+
+  (declare (debug) (safe))
+  (declare (generic))
+  (define (score-types types)
+    (types-fold
+     (lambda (acc type)
+       (+ acc (type-goodness type)))
+     0
+     types))
+
+  (define (type-cardinality-except-fixnum type)
+    (bit-count
+     (bitwise-and (- (expt 2 30) 1)
+                  (bitwise-ior (type-motley-mut-bitset type)
+                               (type-motley-not-mut-bitset type)))))
+
+  (define (fixnum-range-goodness type)
+    (let* ((fixnum-range (type-motley-fixnum-range type))
+           (fixnum-range-num (type-fixnum-range-numeric tctx type))
+           (lo (type-fixnum-range-lo fixnum-range-num))
+           (hi (type-fixnum-range-hi fixnum-range-num))
+           (n (+ 1 (- hi lo)))
+           (nb-bits (integer-length n)))
+      (+ (case (type-fixnum-range-lo fixnum-range) ((>=) 2) ((>) 1) (else 0))
+         (case (type-fixnum-range-hi fixnum-range) ((<=) 2) ((<) 1) (else 0))
+         nb-bits)))
+
+  (define (type-goodness type)
+    ;; 0 is highest goodness
+    (let ((t (type-motley-force tctx type)))
+      (+ (* 40 (type-cardinality-except-fixnum t))
+         (fixnum-range-goodness t))))
+
+  (define (types-fold fn base types)
+    (let ((len (vector-length types)))
+      (let loop ((i locenv-start-regs) (acc base))
+        (if (< i len)
+            (let ((type (vector-ref types (+ i 1))))
+              (loop (+ i locenv-entry-size)
+                    (fn acc type)))
+            acc))))
+
+  (define (types-length types)
+    (let ((len (vector-length types)))
+      (quotient (- len locenv-start-regs) locenv-entry-size)))
+
+  (let* ((details '())
+         (n (vector-length types-lbl-vect))
+         (score-of-all-versions 0)
+         (scores (make-vector n 0))
+         (types-tbl
+          (let ((types-tbl (make-table test: locenv-eqv?)))
+            (for-each
+             (lambda (i)
+               (let* ((types (car (vector-ref types-lbl-vect i)))
+                      (score (score-types types)))
+                 (table-set! types-tbl types i)
+                 (vector-set! scores i score)
+                 (set! score-of-all-versions
+                   (+ score-of-all-versions score))))
+             (iota n))
+            types-tbl)))
+
+    (define (types-merge2 types1 types2 widen?)
+      (locenv-merge types1
+                    types2
+                    0
+                    (lambda (type1 type2)
+                      (type-union tctx type1 type2 widen?))))
+
+    (define (types-merge-multi types-list widen?)
+      (let loop ((types (car types-list)) (lst (cdr types-list)))
+        (if (pair? lst)
+            (loop (types-merge2 types (car lst) widen?)
+                  (cdr lst))
+            types)))
+
+    (define (score-merge i j)
+      (let* ((ti (vector-ref types-lbl-vect i))
+             (tj (vector-ref types-lbl-vect j))
+             (types-merged (types-merge-multi (list (car ti) (car tj)) #t))
+             (score-merged (score-types types-merged))
+             (score-of-all-versions-except-i-j
+              (- score-of-all-versions
+                 (+ (vector-ref scores i)
+                    (vector-ref scores j))))
+             (nb-versions-added
+              (let ((k (table-ref types-tbl types-merged i)))
+                (if (or (= i k) (= j k)) ;; not an existing version other than i and j?
+                    1
+                    0)))
+             (score
+              (+ score-of-all-versions-except-i-j
+                 (if (= nb-versions-added 0)
+                     0 ;; penalty for losing one more specialisation than strictly needed!
+                     score-merged))))
+        (if track-version-history?
+            (set! details
+                      (cons (string-append
+                             (format-gvm-lbl (cdr ti) '(new))
+                             " "
+                             (format-gvm-lbl (cdr tj) '(new))
+                             " = "
+                             (number->string score))
+                            details)))
+        score))
+
+    (let ((best-score 999999999)
+          (best-score-pair #f))
+
+      (for-each
+       (lambda (i)
+         (for-each
+          (lambda (j)
+            (let ((score (score-merge i j)))
+              (if (< score best-score)
+                  (begin
+                    (set! best-score score)
+                    (set! best-score-pair (list i j))))))
+            (iota i)))
+       (iota n))
+
+      (let* ((in best-score-pair)
+             (out (keep (lambda (i) (not (memv i in))) (iota n))))
+        (vector in out details)))))
+
+(define (select-versions-to-merge-using-distance tctx types-lbl-vect types-distance)
   (let* ((n (vector-length types-lbl-vect))
          (min-dist 99999999)
          (min-dist-pair #f)
