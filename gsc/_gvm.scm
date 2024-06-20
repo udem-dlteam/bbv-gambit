@@ -3717,7 +3717,7 @@
           tctx
           types-lbl-vect
           types-distance-linear)))
-      ((feeley #f) ;; add #f here to default to feeley
+      ((feeley) ;; add #f here to default to feeley
        (lambda (tctx types-lbl-vect)
          (select-versions-to-merge-using-distance
           tctx
@@ -3732,6 +3732,10 @@
 
   (declare (debug) (safe))
   (declare (generic))
+
+  (define bbv-parameters
+    (with-input-from-string (getenv "BBV_PARAMETERS" "49 40 -34 -17") read-all))
+
   (define (score-types types)
     (types-fold
      (lambda (acc type)
@@ -3752,15 +3756,23 @@
            (hi (type-fixnum-range-hi fixnum-range-num))
            (n (+ 1 (- hi lo)))
            (nb-bits (integer-length n)))
-      (+ (case (type-fixnum-range-lo fixnum-range) ((>=) 2) ((>) 1) (else 0))
-         (case (type-fixnum-range-hi fixnum-range) ((<=) 2) ((<) 1) (else 0))
+      (+ (case (type-fixnum-range-lo fixnum-range)
+           ((>=) (list-ref bbv-parameters 2))
+           ((>) (list-ref bbv-parameters 3))
+           (else 0))
+         (case (type-fixnum-range-hi fixnum-range)
+           ((<=) (list-ref bbv-parameters 2))
+           ((<) (list-ref bbv-parameters 3))
+           (else 0))
          nb-bits)))
 
   (define (type-goodness type)
     ;; 0 is highest goodness
     (let ((t (type-motley-force tctx type)))
-      (+ (* 40 (type-cardinality-except-fixnum t))
-         (fixnum-range-goodness t))))
+      (+ (* (list-ref bbv-parameters 0)
+            (type-cardinality-except-fixnum t))
+         (* (list-ref bbv-parameters 1)
+            (fixnum-range-goodness t)))))
 
   (define (types-fold fn base types)
     (let ((len (vector-length types)))
