@@ -3636,6 +3636,9 @@
 
   (declare (generic))
 
+  (define bbv-parameters
+    (with-input-from-string (getenv "BBV_PARAMETERS" "-25 -78 -92 -41 85 33") read-all))
+
   (define single-type-specificity 4)
 
   (define (fixnum-specificity tctx type)
@@ -3646,12 +3649,12 @@
                (lo (type-fixnum-range-lo fixnum-range))
                (hi (type-fixnum-range-hi fixnum-range)))
           (cond ((and (eq? lo '>=) (eq? hi '<=))
-                 3)
+                 (list-ref bbv-parameters 0))
                 ((or (and (number? lo) (>= lo -1))
                      (and (number? hi) (<= hi 0)))
-                 2)
+                 (list-ref bbv-parameters 1))
                 (else
-                 1)))))
+                 (list-ref bbv-parameters 2))))))
 
   (define (specificity type)
     ;; returns an integer indicating how specific that type is
@@ -3661,7 +3664,7 @@
         (let* ((t (type-motley-force tctx type))
                (n (fixnum-specificity tctx type)))
           (+ n
-             (* single-type-specificity
+             (* (list-ref bbv-parameters 3)
                 (bit-count
                  (bitwise-and (- (expt 2 30) 1)
                               (bitwise-ior (type-motley-mut-bitset t)
@@ -3679,7 +3682,7 @@
   (define (usefulness-of-types types)
     ;; 0 is the most useful (a single type)
     (abs (- (specificity-of-types types)
-            single-type-specificity)))
+            (list-ref bbv-parameters 4))))
 
   (let* ((len (vector-length types1))
          (ut1 (usefulness-of-types types1))
@@ -3692,7 +3695,7 @@
                  (dist (+ ltd (abs (- (fixnum-specificity tctx type1)
                                       (fixnum-specificity tctx type2))))))
             (loop (+ i locenv-entry-size) (+ acc dist)))
-          (+ (* acc 10000) (quotient 9999 (+ 1 ut1 ut2)))))))
+          (- (* acc 100) (* (list-ref bbv-parameters 5) (+ 1 ut1 ut2)))))))
 
 (define select-versions-to-merge #f)
 
@@ -3711,7 +3714,7 @@
           tctx
           types-lbl-vect
           types-distance-sametypes)))
-      ((linear)
+      ((linear #f)
        (lambda (tctx types-lbl-vect)
          (select-versions-to-merge-using-distance
           tctx
@@ -3734,7 +3737,7 @@
   (declare (generic))
 
   (define bbv-parameters
-    (with-input-from-string (getenv "BBV_PARAMETERS" "49 40 -34 -17") read-all))
+    (with-input-from-string (getenv "BBV_PARAMETERS" "49 34 -34 -24") read-all))
 
   (define (score-types types)
     (types-fold
@@ -3916,7 +3919,11 @@
             (iota i))))
       (iota n))
 
-    (partition-distance (car min-dist-pair) min-dist details)))
+    (let* ((pd (partition-distance (car min-dist-pair) min-dist details))
+           (in (vector-ref pd 0))
+           (out (vector-ref pd 1))
+           (details (vector-ref pd 2)))
+      (vector (list (car in) (cadr in)) (append (cddr in) out) details))))
 
 ;;; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 ;;
