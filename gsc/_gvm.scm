@@ -3714,13 +3714,13 @@
           tctx
           types-lbl-vect
           types-distance-sametypes)))
-      ((linear #f)
+      ((linear)
        (lambda (tctx types-lbl-vect)
          (select-versions-to-merge-using-distance
           tctx
           types-lbl-vect
           types-distance-linear)))
-      ((feeley) ;; add #f here to default to feeley
+      ((feeley #f) ;; add #f here to default to feeley
        (lambda (tctx types-lbl-vect)
          (select-versions-to-merge-using-distance
           tctx
