@@ -2278,7 +2278,7 @@
 ;; -------------
 
 (define debug-bbv? #f)
-(define track-version-history? #t)
+(define track-version-history? #f)
 (define track-version-history-for-visualization-tool? #f)
 
 (define track-version-history-counter 0)
