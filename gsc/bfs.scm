@@ -165,7 +165,8 @@
                 (add-friend! tree from to)
                 (hoist from to)
                 (do () ((queue-empty? queue))
-                (hoist (queue-get! queue) (queue-get! queue)))))
+                (let* ((from (queue-get! queue)) (to (queue-get! queue)))
+                    (hoist from to)))))
 
         (define (remove-edge! tree from to #!optional onkill)
             (cond

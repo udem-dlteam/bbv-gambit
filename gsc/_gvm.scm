@@ -890,7 +890,7 @@
 
 (define (bbs-purify bbs proc)
 
-  (define purify? #f)
+  (define purify? #t)
 
   (define (purify-step bbs0)
     (let* ((bbs1 (bbs-remove-jump-cascades bbs0))
@@ -6971,12 +6971,12 @@
         (InterpreterState-execute-close state instr)
         (assert-types state instr))
       ((ifjump)
-        (InterpreterState-primitive-counter-increment state "#gvm:ifjump")
+        (InterpreterState-primitive-counter-increment state '#gvm:ifjump)
         (InterpreterState-execute-ifjump state instr))
       ((jump)
         (InterpreterState-primitive-counter-increment
           state
-          (if (jump-safe? instr) "#gvm:jump/safe" "#gvm:jump"))
+          (if (jump-safe? instr) '#gvm:jump/safe '#gvm:jump))
         (InterpreterState-execute-jump state instr))
       (else
         (InterpreterState-raise-error state "unknown instruction" (gvm-instr-kind instr)))))
