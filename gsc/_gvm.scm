@@ -3714,13 +3714,13 @@
           tctx
           types-lbl-vect
           types-distance-sametypes)))
-      ((linear)
+      ((linear #f)
        (lambda (tctx types-lbl-vect)
          (select-versions-to-merge-using-distance
           tctx
           types-lbl-vect
           types-distance-linear)))
-      ((feeley #f) ;; add #f here to default to feeley
+      ((feeley) ;; add #f here to default to feeley
        (lambda (tctx types-lbl-vect)
          (select-versions-to-merge-using-distance
           tctx
@@ -6971,12 +6971,12 @@
         (InterpreterState-execute-close state instr)
         (assert-types state instr))
       ((ifjump)
-        (InterpreterState-primitive-counter-increment state '#gvm:ifjump)
+        (InterpreterState-primitive-counter-increment state '|#gvm:ifjump|)
         (InterpreterState-execute-ifjump state instr))
       ((jump)
         (InterpreterState-primitive-counter-increment
           state
-          (if (jump-safe? instr) '#gvm:jump/safe '#gvm:jump))
+          (if (jump-safe? instr) '|#gvm:jump/safe| '|#gvm:jump|))
         (InterpreterState-execute-jump state instr))
       (else
         (InterpreterState-raise-error state "unknown instruction" (gvm-instr-kind instr)))))
