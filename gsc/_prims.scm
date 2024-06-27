@@ -9511,8 +9511,8 @@
           (length-bound? hi1)
           (length-bound? lo2)
           (length-bound? hi2))
-    type-top-fixnum-range ;; we could do some work to determine the sign
-                          ;; for instance to remove bound checks in binary search
+    type-fixnum-or-false ;; we could do some work to determine the sign
+                         ;; for instance to remove bound checks in binary search
     (fixnum-bound
       (quadrants-union
         (make-pos-pos-interval?)
