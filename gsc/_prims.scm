@@ -9100,8 +9100,8 @@
 
   (declare (generic))
 
-  (define (<=? x val) (type-fixnum-<= x val))
-  (define (>=? x val) (type-fixnum->=-num x val))
+  (define (<=? x val) (type-fixnum-always-<= x val))
+  (define (>=? x val) (type-fixnum-always->= x val))
   (define (=? x val) (eqv? x val))
 
   (define (abstract-length-bound-fx+ x y lo?)
@@ -9507,18 +9507,25 @@
              (abstract-neg-neg-fxquotient
                lo1
                (clamp<= hi2 -1))))))
-  (if (or (length-bound? lo1)
-          (length-bound? hi1)
-          (length-bound? lo2)
-          (length-bound? hi2))
-    type-fixnum-or-false ;; we could do some work to determine the sign
-                         ;; for instance to remove bound checks in binary search
-    (fixnum-bound
-      (quadrants-union
-        (make-pos-pos-interval?)
-        (make-pos-neg-interval?)
-        (make-neg-pos-interval?)
-        (make-neg-neg-interval?)))))
+
+    (cond
+      ;; Only numbers, we can calculate a strict interval
+      ((not (or (length-bound? lo1)
+                (length-bound? hi1)
+                (length-bound? lo2)
+                (length-bound? hi2)))
+        (fixnum-bound
+          (quadrants-union
+            (make-pos-pos-interval?) (make-pos-neg-interval?)
+            (make-neg-pos-interval?) (make-neg-neg-interval?))))
+      ;; Divisor may be negative, give up
+      ((not (type-fixnum-always-> lo2 0)) type-fixnum-or-false)
+      ;; Both operands are positive
+      ((type-fixnum-always->= lo1 0) (make-type-fixnum 0 hi1))
+      ;; Dividend is non-positive and divisor is positive
+      ((type-fixnum-always-<= hi1 0) (make-type-fixnum lo1 0))
+      ;; Otherwise give up
+      (else type-fixnum-or-false)))
 
 
 (define (type-infer-common-fxremainder tctx lo1 hi1 lo2 hi2)
