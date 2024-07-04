@@ -3632,6 +3632,60 @@
 (define (types-distance-entropy tctx types1 types2) (make-types-distance-with-norm norm1 entropy-difference tctx types1 types2))
 (define (types-distance-linear tctx types1 types2) (make-types-distance-with-norm norm1 linear-type-distance tctx types1 types2))
 
+(define (types-distance-feeley-old tctx types1 types2)
+
+  (declare (generic))
+
+  (define single-type-specificity 31)
+
+  (define (specificity type)
+    ;; returns an integer indicating how specific that type is
+    ;; roughly speaking the log2 of the cardinality of the possible values
+    ;; the whole fixnum range counts as 31
+    ;; other types count as 31
+    ;; 0 is the most specific (a singleton type), 1 means 2 possible values, etc
+    (if (type-singleton? type)
+        0
+        (let* ((t (type-motley-force tctx type))
+               (fixnum-range (type-fixnum-range-numeric tctx t))
+               (lo (type-fixnum-range-lo fixnum-range))
+               (hi (type-fixnum-range-hi fixnum-range))
+               (n (if (>= hi lo)
+                      (integer-length (+ 1 (- hi lo)))
+                      0)))
+          (+ n
+             (* single-type-specificity
+                (bit-count
+                 (bitwise-and (- (expt 2 30) 1)
+                              (bitwise-ior (type-motley-mut-bitset t)
+                                           (type-motley-not-mut-bitset t)))))))))
+
+  (define (specificity-of-types types)
+    (let ((len (vector-length types1)))
+      (let loop ((i locenv-start-regs) (acc 0) (n 0))
+        (if (< i len)
+            (let* ((type (vector-ref types (+ i 1)))
+                   (spec (specificity type)))
+              (loop (+ i locenv-entry-size) (+ acc spec) (+ n 1)))
+            (quotient acc n)))))
+
+  (define (usefulness-of-types types)
+    ;; 0 is the most useful (a single type)
+    (abs (- (specificity-of-types types)
+            single-type-specificity)))
+
+  (let* ((len (vector-length types1))
+         (ut1 (usefulness-of-types types1))
+         (ut2 (usefulness-of-types types2)))
+    (let loop ((i locenv-start-regs) (acc 0))
+      (if (< i len)
+          (let* ((type1 (vector-ref types1 (+ i 1)))
+                 (type2 (vector-ref types2 (+ i 1)))
+                 (ltd (linear-type-distance tctx type1 type2))
+                 (dist ltd))
+            (loop (+ i locenv-entry-size) (+ acc dist)))
+          (+ (* acc 100000) (quotient 99999 (+ 1 ut1 ut2)))))))
+
 (define (types-distance-feeley tctx types1 types2)
 
   (declare (generic))
@@ -3714,18 +3768,24 @@
           tctx
           types-lbl-vect
           types-distance-sametypes)))
-      ((linear #f)
+      ((linear)
        (lambda (tctx types-lbl-vect)
          (select-versions-to-merge-using-distance
           tctx
           types-lbl-vect
           types-distance-linear)))
-      ((feeley) ;; add #f here to default to feeley
+      ((feeley)
        (lambda (tctx types-lbl-vect)
          (select-versions-to-merge-using-distance
           tctx
           types-lbl-vect
           types-distance-feeley)))
+      ((feeley-old #f)
+       (lambda (tctx types-lbl-vect)
+         (select-versions-to-merge-using-distance
+          tctx
+          types-lbl-vect
+          types-distance-feeley-old)))
       ((#f)
        select-versions-to-merge-considering-merge-result)
       (else
