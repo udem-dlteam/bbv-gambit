@@ -11,7 +11,17 @@
 (include-adt "_ptreeadt.scm")
 (include-adt "_sourceadt.scm")
 
-(##include "../gsc/bfs.scm")
+
+(define **ssr-graph-bundle
+  (let ()
+    (declare (standard-bindings) (fixnum) (block) (safe))
+    (##include "../ssr-graph/ssr-graph.scm")
+    (set! infinity (expt 2 60))
+    (list make-graph add-edge! connected? redirect!)))
+(define make-BFSTree (list-ref **ssr-graph-bundle 0))
+(define add-edge! (list-ref **ssr-graph-bundle 1))
+(define connected? (list-ref **ssr-graph-bundle 2))
+(define replace! (list-ref **ssr-graph-bundle 3))
 
 (define (pprint val)
   (##namespace ("" pp))
@@ -2676,7 +2686,7 @@
         (if version-is-live?
             (begin
               (reachability-debug most-recent-version 'reaching 'live)
-              (if from-lbl (add-edge! BFSTree from-lbl most-recent-version onrevive))
+              (if from-lbl (onrevive-many (add-edge! BFSTree from-lbl most-recent-version)))
               most-recent-version)
             (let* ((new-lbl (or most-recent-version (new-lbl! lbl))))
               (if (not most-recent-version)
@@ -2686,7 +2696,7 @@
               (queue-put! work-queue (make-queue-task bb new-lbl))
               (track-version-history lbl (list 'add from-lbl)) ;; track history of versions
               (reachability-debug new-lbl 'reaching 'anew)
-              (if from-lbl (add-edge! BFSTree from-lbl new-lbl onrevive))
+              (if from-lbl (onrevive-many (add-edge! BFSTree from-lbl new-lbl)))
               new-lbl))))
 
     (define (walk-bb bb types-before new-lbl)
@@ -3282,7 +3292,7 @@
               (bb-versions (get-bb-versions bb)))
         (> (bb-versions-active-lbl-length bb-versions) (max 1 (bb-version-limit bb)))))
 
-    (define (onrevive lbl cause)
+    (define (onrevive lbl)
       (add-version-history-event reachable (orig-lbl-mapping-ref lbl) lbl)
       (let* ((orig-lbl (orig-lbl-mapping-ref lbl))
               (bb (lbl-num->bb orig-lbl bbs))
@@ -3293,13 +3303,15 @@
           (get-version-types lbl)
           lbl)
         (queue-put! work-queue (make-queue-task bb lbl))))
+    (define (onrevive-many lbls) (for-each (lambda (l) (onrevive l)) lbls))
 
-    (define (onkill lbl cause)
+    (define (onkill lbl)
       (let* ((orig-lbl (orig-lbl-mapping-ref lbl))
              (bb-versions (get-bb-versions-from-lbl orig-lbl)))
         (add-version-history-event unreachable orig-lbl lbl)
         (reachability-debug lbl 'kill)
         (bb-versions-active-lbl-remove-unreachable! bb-versions)))
+    (define (onkill-many lbls) (for-each (lambda (l) (onkill l)) lbls))
 
     (define (merge bb)
       (let* ((lbl (bb-lbl-num bb))
@@ -3352,14 +3364,12 @@
                (reachability-debug lbl 'merge new-lbl '<-)
                (reachability-debug new-lbl 'merge lbl '->)
                (if (not (eqv? lbl new-lbl))
-                   (begin
-                     (replace!
-                      BFSTree lbl new-lbl
-                      onrevive
-                      (lambda (lbl cause)
-                        (if (not (memv lbl lbls-to-merge))
-                            (set! killed (cons lbl killed)))
-                        (onkill lbl cause)))))))
+                   (let* ((effects (replace! BFSTree lbl new-lbl))
+                          (connected (car effects))
+                          (disconnected (cdr effects))
+                          (killed (filter (lambda (l) (not (memv lbl lbls-to-merge))) disconnected)))
+                      (onrevive-many connected)
+                      (onkill-many disconnected)))))
            versions-to-merge)
           (if #f ;; use #t to generate gc events
               (for-each
@@ -3395,7 +3405,7 @@
             (generic-entry-frame-types (gvm-instr-frame entry-label))))
 
       (bbs-entry-lbl-num-set! new-bbs (reach entry-lbl #f (make-bbvctx types-before)))
-      (add-edge! BFSTree bfs-source-node (bbs-entry-lbl-num new-bbs) onrevive)
+      (onrevive-many (add-edge! BFSTree bfs-source-node (bbs-entry-lbl-num new-bbs)))
       (let loop ()
         (let* ((task (queue-get! work-queue))
                 (bb (queue-task-bb task))

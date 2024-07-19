@@ -28,6 +28,8 @@
 (define (set-for-each f set) (table-for-each (lambda (k _) (f k)) set))
 (define (set-search f set) (table-search (lambda (k _) (and (f k) k)) set))
 (define (set->list set) (map car (table->list set)))
+(define (set-add-many! set items) (for-each (lambda (item) (set-add! set item)) items))
+(define (set-remove-many! set items) (for-each (lambda (item) (set-remove! set item)) items))
 
 (define (table-ref-or-set-default! table x)
   (let ((value (table-ref table x #f)))
@@ -153,13 +155,18 @@
   (let ((friends (table-ref (graph-friends graph) x #f)))
     (if friends (set-contains? friends f) #f)))
 
-(define (add-edge! graph from to #!key onconnect)
+(define (add-edge! graph from to)
+  ;; add an edge to the graph and returns are newly connected nodes
+  ;; caused by the addition of this edge
   (define queue (make-queue))
+
+  (define connected '())
+  (define (onconnect node) (set! connected (cons node connected)))
 
   (define (hoist hoister node)
     (when (dirty-edge? graph hoister node)
       (set-parent! graph node hoister)
-      (if (and onconnect (= (get-rank graph node) infinity)) (onconnect node))
+      (if (= (get-rank graph node) infinity) (onconnect node))
       (update-rank! graph node)
       (neighbors-for-each
         (lambda (n)
@@ -174,16 +181,20 @@
     (do () ((queue-empty? queue))
       (let* ((from (queue-get! queue))
              (to (queue-get! queue)))
-        (hoist from to)))))
+        (hoist from to))))
+  connected)
 
-(define (remove-edge! graph from to #!key ondisconnect)
+(define (remove-edge! graph from to)
+  ;; remove and edge from the graph and returns a list of all nodes that are no longer
+  ;; connected to the source after this removal
   (cond
     ((not (parent? graph to from)) ;; edge not in BFS, can be removed safely
-      (remove-friend! graph from to))
+      (remove-friend! graph from to)
+      '()) ;; nothing disconnected
     (else
-      (remove-parent-edge! graph to ondisconnect: ondisconnect))))
+      (remove-parent-edge! graph to))))
 
-(define (remove-parent-edge! graph to #!key ondisconnect)
+(define (remove-parent-edge! graph to)
   (define loose-queue (make-queue))
   (define catch-queue (make-queue))
   (define loose-set (make-set))
@@ -273,9 +284,15 @@
     ;; all buckets caught, catch rest of the queue
     (do () ((queue-empty? catch-queue))
       (catch (queue-get! catch-queue)))
-    (if ondisconnect (set-for-each ondisconnect disconnected))))
+  (set->list disconnected)))
 
-(define (redirect! graph node other #!key onconnect ondisconnect)
+(define (redirect! graph node other)
+  ;; remove all incoming edges to node and redirect them toward other
+  ;; if there is an edge from node to node itself, it is not redirected
+  ;; this procedure chooses the order in which to add and remove edges
+  ;; to minimize the work to maintain ranks
+  ;; a pair containing the newly connected nodes and newly disconnected
+  ;; nodes respectively is returned
   (define (find-min-by-rank nodes)
     (let loop ((best (car nodes))
                (rank (get-rank graph (car nodes)))
@@ -288,10 +305,17 @@
                 (loop next next-rank (cdr nodes))
                 (loop best rank (cdr nodes)))))))
 
-  ;; remove all incoming edges to node and redirect them toward other
-  ;; if there is an edge from node to node itself, it is not redirected
-  ;; this procedure chooses the order in which to add and remove edges
-  ;; to minimize the work to maintain ranks
+  (define connected (make-set))
+  (define disconnected (make-set))
+
+  (define (connect nodes)
+    (set-remove-many! disconnected nodes)
+    (set-add-many! connected nodes))
+
+  (define (disconnect nodes)
+    (set-remove-many! connected nodes)
+    (set-add-many! disconnected nodes))
+
   (when (not (= node other)) ;; do nothing for self redirect
     (let ((parent (get-parent graph node))
           (friendlies
@@ -305,7 +329,7 @@
           (for-each (lambda (f) (remove-friend! graph f node)) friendlies)
           ;; check parent in case node was entirely disconnected
           (when parent
-            (remove-parent-edge! graph node ondisconnect: ondisconnect)
+            (disconnect (remove-parent-edge! graph node))
             (if (not (parent? graph other parent))
                 (add-friend! graph parent other)))
           ;; all edges can be redirected to other without possibility of affecting rank
@@ -316,10 +340,11 @@
           (let ((adopter (or parent (find-min-by-rank friendlies))))
             ;; removing friendlies never changes rank
             (for-each (lambda (f) (remove-friend! graph f node)) friendlies)
-            (if parent (remove-parent-edge! graph node ondisconnect: ondisconnect))
-            (add-edge! graph adopter other onconnect: onconnect)
+            (if parent (disconnect (remove-parent-edge! graph node)))
+            (connect (add-edge! graph adopter other))
             ;; next edges cannot udpate rank
-            (for-each (lambda (f) (when (not (= f adopter)) (add-friend! graph f other))) friendlies)))))))
+            (for-each (lambda (f) (when (not (= f adopter)) (add-friend! graph f other))) friendlies))))))
+  (cons (set->list connected) (set->list disconnected)))
 
 (define (connected? graph node)
   (not (= (get-rank graph node) infinity)))
