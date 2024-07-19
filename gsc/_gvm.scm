@@ -17,11 +17,12 @@
     (declare (standard-bindings) (fixnum) (block) (safe))
     (##include "../ssr-graph/ssr-graph.scm")
     (set! infinity (expt 2 60))
-    (list make-graph add-edge! connected? redirect!)))
-(define make-BFSTree (list-ref **ssr-graph-bundle 0))
+    (list make-graph add-edge! connected? redirect! redirect-many!)))
+(define make-ssr-graph (list-ref **ssr-graph-bundle 0))
 (define add-edge! (list-ref **ssr-graph-bundle 1))
 (define connected? (list-ref **ssr-graph-bundle 2))
-(define replace! (list-ref **ssr-graph-bundle 3))
+(define redirect! (list-ref **ssr-graph-bundle 3))
+(define redirect-many! (list-ref **ssr-graph-bundle 4))
 
 (define (pprint val)
   (##namespace ("" pp))
@@ -2374,6 +2375,32 @@
   #t #;
   (and (>= lbl 52) (<= lbl 52))) ;; filter these labels
 
+(define (get-bb-versions bb)
+  (get-bb-versions-from-lbl (bb-lbl-num bb)))
+(define (bb-versions-active-lbl-get bb-versions types-before)
+  (table-ref (vector-ref bb-versions 0) types-before #f))
+(define (bb-versions-active-lbl-remove! bb-versions types-before)
+  (table-set! (vector-ref bb-versions 0) types-before))
+(define (bb-versions-active-lbl-add! bb-versions types-before version-lbl)
+  (bb-versions-all-lbl-add! bb-versions types-before version-lbl)
+  (table-set! (vector-ref bb-versions 0) types-before version-lbl))
+(define (bb-versions-active-lbl->list bb-versions #!key (sort? use-directional-widening?))
+  (if sort?
+      (list-sort (lambda (v1 v2) (< (cdr v1) (cdr v2)))
+            (table->list (vector-ref bb-versions 0)))
+      (table->list (vector-ref bb-versions 0))))
+(define (bb-versions-active-lbl-for-each f bb-versions)
+  (table-for-each f (vector-ref bb-versions 0)))
+(define (bb-versions-active-lbl-length bb-versions)
+  (table-length (vector-ref bb-versions 0)))
+(define (bb-versions-all-lbl-get bb-versions types-before)
+  (table-ref (vector-ref bb-versions 1) types-before #f))
+(define (bb-versions-all-lbl-add! bb-versions types-before version-lbl)
+  (set-version-types! version-lbl types-before)
+  (table-set! (vector-ref bb-versions 1) types-before version-lbl))
+(define (bb-versions-all-lbl-for-each f bb-versions)
+  (table-for-each f (vector-ref bb-versions 1)))
+
 (define (bbs-type-specialize* bbs bbs-proc)
   (define bbs-proc-name (proc-obj-name bbs-proc))
 
@@ -2513,7 +2540,7 @@
         new-lbl))
     (define (new-lbl? lbl bbs) (not (lbl-num->bb lbl bbs)))
 
-    (define (reachable? lbl) (connected? BFSTree lbl))
+    (define (reachable? lbl) (connected? ssr-graph lbl))
 
     (define (bbs-cleanup)
       ;; remove unreachable bb
@@ -2686,7 +2713,7 @@
         (if version-is-live?
             (begin
               (reachability-debug most-recent-version 'reaching 'live)
-              (if from-lbl (onrevive-many (add-edge! BFSTree from-lbl most-recent-version)))
+              (if from-lbl (onrevive-many (add-edge! ssr-graph from-lbl most-recent-version)))
               most-recent-version)
             (let* ((new-lbl (or most-recent-version (new-lbl! lbl))))
               (if (not most-recent-version)
@@ -2696,7 +2723,7 @@
               (queue-put! work-queue (make-queue-task bb new-lbl))
               (track-version-history lbl (list 'add from-lbl)) ;; track history of versions
               (reachability-debug new-lbl 'reaching 'anew)
-              (if from-lbl (onrevive-many (add-edge! BFSTree from-lbl new-lbl)))
+              (if from-lbl (onrevive-many (add-edge! ssr-graph from-lbl new-lbl)))
               new-lbl))))
 
     (define (walk-bb bb types-before new-lbl)
@@ -3232,9 +3259,6 @@
                       (walk-instr (bb-branch-instr bb) types-before)))
                 (bb-put-branch! new-bb new-instr))))))
 
-    (define (get-bb-versions bb)
-      (get-bb-versions-from-lbl (bb-lbl-num bb)))
-
     (define (get-bb-versions-from-lbl lbl)
       (or (table-ref versions lbl #f)
           (let ((bb-versions
@@ -3248,22 +3272,6 @@
             (table-set! versions lbl bb-versions)
             bb-versions)))
 
-    (define (bb-versions-active-lbl-get bb-versions types-before)
-      (table-ref (vector-ref bb-versions 0) types-before #f))
-    (define (bb-versions-active-lbl-remove! bb-versions types-before)
-      (table-set! (vector-ref bb-versions 0) types-before))
-    (define (bb-versions-active-lbl-add! bb-versions types-before version-lbl)
-      (bb-versions-all-lbl-add! bb-versions types-before version-lbl)
-      (table-set! (vector-ref bb-versions 0) types-before version-lbl))
-    (define (bb-versions-active-lbl->list bb-versions #!key (sort? use-directional-widening?))
-      (if sort?
-          (list-sort (lambda (v1 v2) (< (cdr v1) (cdr v2)))
-                (table->list (vector-ref bb-versions 0)))
-          (table->list (vector-ref bb-versions 0))))
-    (define (bb-versions-active-lbl-for-each f bb-versions)
-      (table-for-each f (vector-ref bb-versions 0)))
-    (define (bb-versions-active-lbl-length bb-versions)
-      (table-length (vector-ref bb-versions 0)))
     (define (bb-versions-active-lbl-remove-unreachable! bb-versions)
       (define changed? #f)
       (for-each
@@ -3274,12 +3282,6 @@
                 (bb-versions-active-lbl-remove! bb-versions (car type-lbl)))))
         (bb-versions-active-lbl->list bb-versions))
       changed?)
-
-    (define (bb-versions-all-lbl-get bb-versions types-before)
-      (table-ref (vector-ref bb-versions 1) types-before #f))
-    (define (bb-versions-all-lbl-add! bb-versions types-before version-lbl)
-      (set-version-types! version-lbl types-before)
-      (table-set! (vector-ref bb-versions 1) types-before version-lbl))
 
     (define (bb-versions-text-grid bb-versions)
       (vector-ref bb-versions 2))
@@ -3317,7 +3319,7 @@
       (let* ((lbl (bb-lbl-num bb))
               (bb-versions (get-bb-versions bb))
               (types-lbl-vect (list->vector (bb-versions-active-lbl->list bb-versions)))
-              (in-out-details (select-versions-to-merge tctx types-lbl-vect))
+              (in-out-details (select-versions-to-merge tctx ssr-graph bb))
               (in (vector-ref in-out-details 0))
               (out (vector-ref in-out-details 1))
               (details (vector-ref in-out-details 2))
@@ -3364,7 +3366,7 @@
                (reachability-debug lbl 'merge new-lbl '<-)
                (reachability-debug new-lbl 'merge lbl '->)
                (if (not (eqv? lbl new-lbl))
-                   (let* ((effects (replace! BFSTree lbl new-lbl))
+                   (let* ((effects (redirect! ssr-graph lbl new-lbl))
                           (connected (car effects))
                           (disconnected (cdr effects))
                           (killed (filter (lambda (l) (not (memv lbl lbls-to-merge))) disconnected)))
@@ -3393,7 +3395,7 @@
         (queue-put! work-queue (make-queue-task bb new-lbl))))
 
     (define bfs-source-node -1)
-    (define BFSTree (make-BFSTree bfs-source-node))
+    (define ssr-graph (make-ssr-graph bfs-source-node))
 
     (let* ((entry-lbl
             (bbs-entry-lbl-num bbs))
@@ -3405,7 +3407,7 @@
             (generic-entry-frame-types (gvm-instr-frame entry-label))))
 
       (bbs-entry-lbl-num-set! new-bbs (reach entry-lbl #f (make-bbvctx types-before)))
-      (onrevive-many (add-edge! BFSTree bfs-source-node (bbs-entry-lbl-num new-bbs)))
+      (onrevive-many (add-edge! ssr-graph bfs-source-node (bbs-entry-lbl-num new-bbs)))
       (let loop ()
         (let* ((task (queue-get! work-queue))
                 (bb (queue-task-bb task))
@@ -3800,6 +3802,60 @@
        select-versions-to-merge-considering-merge-result)
       (else
        (error "unknown bbv-merge-strategy strategy" opt)))))
+
+(define (select-versions-to-merge-after-gc score)
+  (define (select tctx ssr-graph bb)
+    (let* ((bb-versions (get-bb-versions bb))
+           (types-lbl-vect (list->vector (bb-versions-active-lbl->list bb-versions)))
+           (nversions (vector-length types-lbl-vect)))
+      (define result-table
+        (let loop ((i 0) (j 1))
+          (cond 
+            ((>= j nversions) (loop (+ i 1) (+ i 2)))
+            ((>= i nversions) '())
+            (else
+              (let* ((itypes (car (vector-ref types-lbl-vect i)))
+                    (jtypes (car (vector-ref types-lbl-vect j)))
+                    (ilbl (cdr (vector-ref types-lbl-vect i)))
+                    (jlbl (cdr (vector-ref types-lbl-vect j)))
+                    (merge-result (types-merge-multi (list itypes jtypes) #t))
+                    (existing-lbl-of-merged-type (bb-versions-all-lbl-get bb-versions merged-types))
+                    (merge-lbl (if existing-lbl-of-merged-type
+                                  (replacement-lbl-num existing-lbl-of-merged-type)
+                                  'dummy-lbl)) ;; dummy lbl
+                    (merged-types
+                        (if (not existing-lbl-of-merged-type) merge-result (get-version-types merge-lbl)))
+                    (merge-effects (redirect-many! ssr-graph (list ilbl jlbl) merge-lbl))
+                    (connected (car effects))
+                    (disconnected (cdr effects))
+                    (version-lbls-before-merge (map cdr types-lbl-vect))
+                    (versions-after-merge '()))
+                (bb-versions-all-lbl-for-each
+                  (lambda (lbl version)
+                    (cond
+                      ((memq lbl connected)
+                        (set! versions-after-merge (cons version versions-after-merge)))
+                      ((memq lbl disconnected) #f)
+                      (else (memq lbl version-lbls-before-merge)
+                        (set! versions-after-merge (cons version versions-after-merge)))))
+                  bb-versions)
+                (cons
+                  (cons i j versions-after-merge)
+                  (loop i (+ j 1))))))))
+      (let loop ((result-table result-table) (best #f) (best-score -99999))
+        (if (null? result-table)
+            (vector
+              (filter (lambda (l) (not (memq l best))) (map cdr types-lbl-vect))
+              best)
+            (let* ((result (car result-table))
+                   (i (car result))
+                   (j (cadr result))
+                   (versions-after-merge (caddr result))
+                   (ij-score (score bb versions-after-merge)))
+              (if (> ij-score best-score)
+                  (loop (cdr result-table) (list i j) ij-score)
+                  (loop (cdr result-table best best-score))))))))
+  select)
 
 (define (select-versions-to-merge-considering-merge-result tctx types-lbl-vect)
 

@@ -54,6 +54,8 @@
 (define (graph-friends graph) (vector-ref graph 4))
 (define (graph-friendlies graph) (vector-ref graph 5))
 
+(define (graph-deepcopy graph) (u8vector->object (object->u8vector graph)))
+
 ;;   Parent P of X
 ;;   P -> X where rank(X) = rank(P) + 1
 ;;
@@ -155,7 +157,7 @@
   (let ((friends (table-ref (graph-friends graph) x #f)))
     (if friends (set-contains? friends f) #f)))
 
-(define (add-edge! graph from to)
+(define (add-edge! graph from to #!key simulate)
   ;; add an edge to the graph and returns are newly connected nodes
   ;; caused by the addition of this edge
   (define queue (make-queue))
@@ -175,6 +177,8 @@
         graph
         node)))
 
+  (if simulate (set! graph (graph-deepcopy graph)))
+
   (when (not (edge-exists? graph from to)) ;; no duplicate edges
     (add-friend! graph from to)
     (hoist from to)
@@ -184,9 +188,11 @@
         (hoist from to))))
   connected)
 
-(define (remove-edge! graph from to)
+(define (remove-edge! graph from to #!key simulate)
   ;; remove and edge from the graph and returns a list of all nodes that are no longer
   ;; connected to the source after this removal
+  (if simulate (set! graph (graph-deepcopy graph)))
+
   (cond
     ((not (parent? graph to from)) ;; edge not in BFS, can be removed safely
       (remove-friend! graph from to)
@@ -286,7 +292,32 @@
       (catch (queue-get! catch-queue)))
   (set->list disconnected)))
 
-(define (redirect! graph node other)
+(define (redirect-many! graph nodes other #!key simulate)
+  (define connected (make-set))
+  (define disconnected (make-set))
+
+  (define (connect nodes)
+    (set-remove-many! disconnected nodes)
+    (set-add-many! connected nodes))
+
+  (define (disconnect nodes)
+    (set-remove-many! connected nodes)
+    (set-add-many! disconnected nodes))
+
+  (if simulate (set! graph (graph-deepcopy graph)))
+
+  (for-each
+    (lambda (node)
+      (let ((effects (redirect! graph node other))
+            (connected (car effects))
+            (disconnected (cdr effects)))
+        (connect connected)
+        (disconnect disconnected)))
+    nodes)
+
+  (cons (set->list connected) (set->list disconnected)))
+
+(define (redirect! graph node other #!key simulate)
   ;; remove all incoming edges to node and redirect them toward other
   ;; if there is an edge from node to node itself, it is not redirected
   ;; this procedure chooses the order in which to add and remove edges
@@ -315,6 +346,8 @@
   (define (disconnect nodes)
     (set-remove-many! connected nodes)
     (set-add-many! disconnected nodes))
+
+  (if simulate (set! graph (graph-deepcopy graph)))
 
   (when (not (= node other)) ;; do nothing for self redirect
     (let ((parent (get-parent graph node))
