@@ -308,9 +308,9 @@
 
   (for-each
     (lambda (node)
-      (let ((effects (redirect! graph node other))
-            (connected (car effects))
-            (disconnected (cdr effects)))
+      (let* ((effects (redirect! graph node other))
+             (connected (car effects))
+             (disconnected (cdr effects)))
         (connect connected)
         (disconnect disconnected)))
     nodes)
