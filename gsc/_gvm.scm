@@ -3536,7 +3536,7 @@
 
 (define (types-count tctx type)
   (define count 0)
-  (for-each-motley-bit tctx (lambda (_) (set! count (+ count 1))) (type-motley-force tctx type) #t)
+  (for-each-not-mut-motley-bit tctx (lambda (_) (set! count (+ count 1))) (type-motley-force tctx type) #t)
   count)
 
 ;; Entropy-based distance
@@ -3770,9 +3770,103 @@
           types-lbl-vect
           types-distance-feeley-old)))
       ((#f)
-        (select-versions-to-merge-after-gc (lambda (bb versions) 3)))
+        (select-versions-to-merge-after-gc (make-versions-scorer)))
       (else
        (error "unknown bbv-merge-strategy strategy" opt)))))
+
+(define (make-versions-scorer)
+  (define default "1 1 1 1 1 1 1 1 1 1 1")
+  (define bbv-parameters (with-input-from-string (getenv "BBV_PARAMETERS" default) read-all))
+  (define limit-overshoot-weight (list-ref bbv-parameters 0))
+  (define limit-overshoot-offset (list-ref bbv-parameters 1))
+  (define type-specificity-weight (list-ref bbv-parameters 2))
+  (define type-specificity-offset (list-ref bbv-parameters 3))
+  (define type-overlap-weight (list-ref bbv-parameters 4))
+  (define type-overlap-offset (list-ref bbv-parameters 5))
+  (define type-fixnum-weight (list-ref bbv-parameters 6))
+  (define type-fixnum-offset (list-ref bbv-parameters 7))
+  (define type-flonum-weight (list-ref bbv-parameters 8))
+  (define type-flonum-offset (list-ref bbv-parameters 9))
+  (define accumulation-parameter (list-ref bbv-parameters 10))
+
+  (define accumulate
+    (cond
+      ((< accumulation-parameter -50) min)
+      ((< accumulation-parameter 0) max)
+      ((< accumulation-parameter 50) +)
+      (else *)))
+
+  (define (types-fold fn base types)
+    (let ((len (vector-length types)))
+      (let loop ((i locenv-start-regs) (acc base))
+        (if (< i len)
+            (let ((type (vector-ref types (+ i 1))))
+              (loop (+ i locenv-entry-size)
+                    (fn acc type)))
+            acc))))
+
+  (define (locenv->types types)
+    (types-fold
+      (lambda (acc type) (cons type acc))
+      '()
+      types))
+
+  (define (sum-metric metric types)
+    (types-fold
+      (lambda (acc type) (+ acc (metric type)))
+      0
+      types))
+
+  (lambda (tctx bb versions)
+    (define (geomean values) (expt (apply * values) (/ 1 (length values))))
+    (define (mean values) (/ (apply + values) (length values)))
+
+    (define (limit-overshoot) (- (bb-version-limit bb) (length versions)))
+
+    (define max-specificity (+ 1 (/ 1 number-of-possible-types)))
+    (define min-specificity (/ 1 number-of-possible-types))
+    (define (specificity-of type)
+      (cond
+        ((type-singleton? type) max-specificity)
+        ((type-top? type) min-specificity)
+        (else
+          (let ((count 0))
+            (for-each-not-mut-motley-bit
+              tctx
+              (lambda (_) (set! count (+ count 1)))
+              type
+              #t)
+            (- 1 (/ count number-of-possible-types))))))
+
+    (define (type-specificity versions)
+      (geomean (map (lambda (types) (sum-metric specificity-of types)) versions)))
+
+    (define (type-overlap)
+      ;; computes the specificity of the merge of all 1-to-1 combination of versions
+      (define overlaps
+        (let outter ((versions versions))
+          (if (null? versions)
+              '()
+              (let inner ((tail (cdr versions)))
+                (if (null? tail)
+                    (outter (cdr versions))
+                    (cons (types-merge2 tctx (car versions) (car tail) #f) (inner (cdr tail))))))))
+      (if (> (length overlaps) 0) (type-specificity overlaps) max-specificity))
+
+    (define (type-fixnum-count)
+      (define (count-fixnum type) (if (type-can-be-fixnum? tctx type) 1 0))
+      (mean (map (lambda (types) (sum-metric count-fixnum types)) versions)))
+
+    (define (type-flonum-count)
+      (define (count-flonum type) (if (type-can-be-flonum? tctx type) 1 0))
+      (mean (map (lambda (types) (sum-metric count-flonum types)) versions)))
+
+    (accumulate 
+      (+ (* limit-overshoot-weight (limit-overshoot)) limit-overshoot-offset)
+      (+ (* type-specificity-weight (type-specificity versions)) type-specificity-offset)
+      (+ (* type-overlap-weight (type-overlap)) type-overlap-offset)
+      (+ (* type-fixnum-weight (type-fixnum-count)) type-fixnum-offset)
+      (+ (* type-flonum-weight (type-flonum-count)) type-flonum-offset))))
 
 (define (select-versions-to-merge-after-gc score)
   (define dummy-lbl -9999)
@@ -3798,17 +3892,15 @@
                      (connected (car effects))
                      (disconnected (cdr effects))
                      (version-lbls-before-merge (map cdr type-lbl-alist))
-                     (versions-after-merge '()))
+                     (lbls-versions-after-merge '()))
                 (bbs-versions-for-each bbs bb
-                  (lambda (lbl version)
-                    (cond
-                      ((memq lbl connected)
-                        (set! versions-after-merge (cons version versions-after-merge)))
-                      ((memq lbl disconnected) #f)
-                      (else (memq lbl version-lbls-before-merge)
-                        (set! versions-after-merge (cons version versions-after-merge))))))
+                  (lambda (version lbl)
+                    (if (or (memq lbl connected)
+                            (and (not (memq lbl disconnected))
+                                 (memq lbl version-lbls-before-merge)))
+                      (set! lbls-versions-after-merge (cons (cons lbl version) lbls-versions-after-merge)))))
                 (cons
-                  (cons i (cons j versions-after-merge))
+                  (cons i (cons j lbls-versions-after-merge))
                   (loop i (+ j 1))))))))
       (let loop ((result-table result-table) (best #f) (best-score -99999))
         (if (null? result-table)
@@ -3818,8 +3910,10 @@
             (let* ((result (car result-table))
                    (i (car result))
                    (j (cadr result))
-                   (versions-after-merge (caddr result))
-                   (ij-score (score bb versions-after-merge)))
+                   (lbls-versions-after-merge (cddr result))
+                   (versions-after-merge
+                    (map cdr (list-sort (lambda (x y) (< (car x) (car y))) lbls-versions-after-merge)))
+                   (ij-score (score tctx bb versions-after-merge)))
               (if (> ij-score best-score)
                   (loop (cdr result-table) (list i j) ij-score)
                   (loop (cdr result-table) best best-score)))))))
