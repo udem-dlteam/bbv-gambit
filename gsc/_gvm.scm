@@ -3869,7 +3869,7 @@
       (+ (* type-flonum-weight (type-flonum-count)) type-flonum-offset))))
 
 (define (select-versions-to-merge-after-gc score)
-  (define dummy-lbl -9999)
+  (define dummy-lbl (expt 2 60))
   (define (select tctx bbs bb)
     (define new-bbs (bbs-new-bbs bbs))
     (let* ((type-lbl-alist (bbs-active-versions->list bbs bb))
@@ -3899,6 +3899,8 @@
                             (and (not (memq lbl disconnected))
                                  (memq lbl version-lbls-before-merge)))
                       (set! lbls-versions-after-merge (cons (cons lbl version) lbls-versions-after-merge)))))
+                (if (= merge-lbl dummy-lbl)
+                    (set! lbls-versions-after-merge (cons (cons merge-lbl merged-types) lbls-versions-after-merge)))
                 (cons
                   (cons i (cons j lbls-versions-after-merge))
                   (loop i (+ j 1))))))))
