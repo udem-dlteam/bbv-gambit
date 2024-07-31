@@ -3907,7 +3907,7 @@
                 (cons
                   (cons i (cons j lbls-versions-after-merge))
                   (loop i (+ j 1))))))))
-      (let loop ((result-table result-table) (best #f) (best-score -99999))
+      (let loop ((result-table result-table) (best #f) (best-score -inf.0))
         (if (null? result-table)
             (vector
               (filter (lambda (i) (not (memq i best))) (iota (vector-length type-lbl-vect)))
