@@ -3775,7 +3775,7 @@
        (error "unknown bbv-merge-strategy strategy" opt)))))
 
 (define (make-versions-scorer)
-  (declare (generic) (safe))
+  (declare (generic))
 
   (define default "1 1 1 1 1 1 1 1 1 1 1")
   (define bbv-parameters (with-input-from-string (getenv "BBV_PARAMETERS" default) read-all))
@@ -3872,6 +3872,8 @@
       (+ (* type-flonum-weight (type-flonum-count)) type-flonum-offset))))
 
 (define (select-versions-to-merge-after-gc score)
+  (declare (generic))
+
   (define dummy-lbl (expt 2 60))
   (define (select tctx bbs bb)
     (define new-bbs (bbs-new-bbs bbs))
