@@ -3775,6 +3775,8 @@
        (error "unknown bbv-merge-strategy strategy" opt)))))
 
 (define (make-versions-scorer)
+  (declare (generic) (safe))
+
   (define default "1 1 1 1 1 1 1 1 1 1 1")
   (define bbv-parameters (with-input-from-string (getenv "BBV_PARAMETERS" default) read-all))
   (define limit-overshoot-weight (list-ref bbv-parameters 0))
@@ -3818,7 +3820,8 @@
       types))
 
   (lambda (tctx bb versions)
-    (define (geomean values) (expt (apply * values) (/ 1 (length values))))
+    (define (geomean values)
+      (expt (apply * values) (/ 1 (length values))))
     (define (mean values) (/ (apply + values) (length values)))
 
     (define (limit-overshoot) (- (bb-version-limit bb) (length versions)))
