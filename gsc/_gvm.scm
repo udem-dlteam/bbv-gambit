@@ -3777,7 +3777,7 @@
 (define (make-versions-scorer)
   (declare (generic))
 
-  (define default "1 1 1 1 1 1 1 1 1 1 1")
+  (define default "8 -22 0 4 94 29 73 -97 -31 -11 42")
   (define bbv-parameters (with-input-from-string (getenv "BBV_PARAMETERS" default) read-all))
   (define limit-overshoot-weight (list-ref bbv-parameters 0))
   (define limit-overshoot-offset (list-ref bbv-parameters 1))
