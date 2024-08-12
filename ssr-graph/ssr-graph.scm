@@ -75,8 +75,8 @@
 (define proxy-absent-value (gensym 'proxy-absent-value))
 
 (define table-ref
-  (let ((std-table-ref table-ref)
-        (std-table-set! table-set!))
+  (let ((std-table-ref ##table-ref)
+        (std-table-set! ##table-set!))
     (define (table-has? table key)
       (define sentinel (gensym 'sentinel))
       (not (eq? (std-table-ref table key sentinel) sentinel)))
@@ -100,7 +100,7 @@
           (std-table-ref table key default)))))
 
 (define table-set!
-  (let ((std-table-set! table-set!))
+  (let ((std-table-set! ##table-set!))
     (lambda (table key #!optional (value (##absent-object)))
       (if (table-proxy? table)
           (std-table-set!

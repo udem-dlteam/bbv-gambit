@@ -14,7 +14,7 @@
 
 (define **ssr-graph-bundle
   (let ()
-    (declare (standard-bindings) (fixnum) (block) (safe))
+    (declare (not standard-bindings) (fixnum) (separate) (safe))
     (##include "../ssr-graph/ssr-graph.scm")
     (set! infinity (expt 2 60))
     (list make-graph add-edge! connected? redirect! redirect-many!)))
