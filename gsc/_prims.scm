@@ -7617,6 +7617,9 @@
    type-return-bit
    type-other-bit))
 
+(define number-of-motley-bits (length all-motley-bits))
+(define number-of-possible-types (+ number-of-motley-bits 1))
+
 (define type-undefined-mutability-bitset
   (+
    type-false-bit
@@ -7875,12 +7878,11 @@
                     (else         (tctx-smallest-max-fixnum tctx)))))
       (make-type-fixnum-range lo hi))))
 
-(define (for-each-motley-bit tctx fun type #!optional fixnum-marker)
+(define (for-each-not-mut-motley-bit tctx fun type #!optional fixnum-marker)
   (let ((fixnum-range (type-fixnum-range-numeric tctx type))
-        (bits (type-motley-bitset type)))
+        (bits (type-motley-not-mut-bitset type)))
     (if (and fixnum-marker
-             (<= (type-fixnum-range-lo fixnum-range)
-                 (type-fixnum-range-hi fixnum-range)))
+             (type-can-be-fixnum? tctx type))
         (fun fixnum-marker))
     (for-each
       (lambda (bit)
@@ -9059,6 +9061,9 @@
 
 (define (type-can-be-fixnum? tctx type)
   (not (type-bot? (type-intersection tctx type type-fixnum))))
+
+(define (type-can-be-flonum? tctx type)
+  (not (type-bot? (type-intersection tctx type type-flonum))))
 
 (define (type-infer-fixnum1 tctx infer type)
   (if (type-can-be-fixnum? tctx type)

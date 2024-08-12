@@ -1,6 +1,3 @@
-;; infinity is used for nodes rank. Using an absurdly hige value
-;; instead of a float allows to stick to fixnum arithmetic while
-;; remaining valid for any practical usecase
 (define infinity +inf.0)
 
 (define (make-queue) (cons '() '()))
@@ -38,8 +35,17 @@
           (table-set! table x default)
           default))))
 
+(define-type graph
+  constructor: %make-graph
+  source
+  ranks
+  parents
+  children
+  friends
+  friendlies)
+
 (define (make-graph #!optional (source 0))
-  (vector
+  (%make-graph
     source                                  ;; source
     (list->table (list (cons source 0)))    ;; ranks table
     (make-table)                            ;; parents table
@@ -47,12 +53,61 @@
     (make-table)                            ;; friends table
     (make-table)))                          ;; friendlies table
 
-(define (graph-source graph) (vector-ref graph 0))
-(define (graph-ranks graph) (vector-ref graph 1))
-(define (graph-parents graph) (vector-ref graph 2))
-(define (graph-children graph) (vector-ref graph 3))
-(define (graph-friends graph) (vector-ref graph 4))
-(define (graph-friendlies graph) (vector-ref graph 5))
+(define-type table-proxy
+  constructor: %make-table-proxy
+  target
+  proxy)
+
+(define (make-table-proxy table . rest)
+  (%make-table-proxy table (apply make-table rest)))
+
+;; graph-proxy is used when simulating the effect of a change to the graph
+;; all changes are stored in the graph-proxy without mutating the underlying graph
+(define (make-graph-proxy graph)
+  (%make-graph
+    (graph-source graph)
+    (make-table-proxy (graph-ranks graph))
+    (make-table-proxy (graph-parents graph))
+    (make-table-proxy (graph-children graph))
+    (make-table-proxy (graph-friends graph))
+    (make-table-proxy (graph-friendlies graph))))
+
+(define proxy-absent-value (gensym 'proxy-absent-value))
+
+(define table-ref
+  (let ((std-table-ref ##table-ref)
+        (std-table-set! ##table-set!))
+    (define (table-has? table key)
+      (define sentinel (gensym 'sentinel))
+      (not (eq? (std-table-ref table key sentinel) sentinel)))
+    (define (deepcopy x) (u8vector->object (object->u8vector x)))
+    (lambda (table key #!optional (default (##absent-object)))
+      (define (default-or-exception!)
+        (if (eq? default (##absent-object))
+            (##raise-unbound-key-exception table-ref key)
+            default))
+      (if (table-proxy? table)
+          (let ((target (table-proxy-target table))
+                (proxy (table-proxy-proxy table)))
+            (cond
+              ((table-has? proxy key)
+                (let ((value (std-table-ref proxy key)))
+                  (if (eq? value proxy-absent-value) (default-or-exception!) value)))
+              ((table-has? target key)
+                (std-table-set! proxy key (deepcopy (std-table-ref target key)))
+                (std-table-ref proxy key))
+              (else (default-or-exception!))))
+          (std-table-ref table key default)))))
+
+(define table-set!
+  (let ((std-table-set! ##table-set!))
+    (lambda (table key #!optional (value (##absent-object)))
+      (if (table-proxy? table)
+          (std-table-set!
+            (table-proxy-proxy table)
+            key
+            (if (eq? value (##absent-object)) proxy-absent-value value))
+          (std-table-set! table key value)))))
 
 ;;   Parent P of X
 ;;   P -> X where rank(X) = rank(P) + 1
@@ -155,7 +210,7 @@
   (let ((friends (table-ref (graph-friends graph) x #f)))
     (if friends (set-contains? friends f) #f)))
 
-(define (add-edge! graph from to)
+(define (add-edge! graph from to #!key simulate)
   ;; add an edge to the graph and returns are newly connected nodes
   ;; caused by the addition of this edge
   (define queue (make-queue))
@@ -175,6 +230,8 @@
         graph
         node)))
 
+  (if simulate (set! graph (make-graph-proxy graph)))
+
   (when (not (edge-exists? graph from to)) ;; no duplicate edges
     (add-friend! graph from to)
     (hoist from to)
@@ -184,9 +241,11 @@
         (hoist from to))))
   connected)
 
-(define (remove-edge! graph from to)
+(define (remove-edge! graph from to #!key simulate)
   ;; remove and edge from the graph and returns a list of all nodes that are no longer
   ;; connected to the source after this removal
+  (if simulate (set! graph (make-graph-proxy graph)))
+
   (cond
     ((not (parent? graph to from)) ;; edge not in BFS, can be removed safely
       (remove-friend! graph from to)
@@ -286,7 +345,32 @@
       (catch (queue-get! catch-queue)))
   (set->list disconnected)))
 
-(define (redirect! graph node other)
+(define (redirect-many! graph nodes other #!key simulate)
+  (define connected (make-set))
+  (define disconnected (make-set))
+
+  (define (connect nodes)
+    (set-remove-many! disconnected nodes)
+    (set-add-many! connected nodes))
+
+  (define (disconnect nodes)
+    (set-remove-many! connected nodes)
+    (set-add-many! disconnected nodes))
+
+  (if simulate (set! graph (make-graph-proxy graph)))
+
+  (for-each
+    (lambda (node)
+      (let* ((effects (redirect! graph node other))
+             (connected (car effects))
+             (disconnected (cdr effects)))
+        (connect connected)
+        (disconnect disconnected)))
+    nodes)
+
+  (cons (set->list connected) (set->list disconnected)))
+
+(define (redirect! graph node other #!key simulate)
   ;; remove all incoming edges to node and redirect them toward other
   ;; if there is an edge from node to node itself, it is not redirected
   ;; this procedure chooses the order in which to add and remove edges
@@ -315,6 +399,8 @@
   (define (disconnect nodes)
     (set-remove-many! connected nodes)
     (set-add-many! disconnected nodes))
+
+  (if simulate (set! graph (make-graph-proxy graph)))
 
   (when (not (= node other)) ;; do nothing for self redirect
     (let ((parent (get-parent graph node))
@@ -421,6 +507,14 @@
                    (param-rank get-rank))
       (apply test args)))
 
+  (define (run-proxied test . args)
+    (parameterize ((param-make (lambda (source) (make-graph-proxy (make-graph source))))
+                   (param-add! add-edge!)
+                   (param-delete! remove-edge!)
+                   (param-redirect! redirect!)
+                   (param-rank get-rank))
+      (apply test args)))
+
   (define (run-one-fuzzy-test graph-size)
     (define delete-density 0.1)
     (define redirect-density 0.05)
@@ -478,8 +572,10 @@
     (let* ((nb-instructions (* graph-size (+ 1 (random-integer graph-size))))
            (instructions (make-random-instructions nb-instructions))
            (expected-result (get-expected-result interpret-instructions instructions))
-           (result (run interpret-instructions instructions)))
-      (or (equal? expected-result result)
+           (result (run interpret-instructions instructions))
+           (proxied-result (run-proxied interpret-instructions instructions)))
+      (cond
+        ((not (equal? expected-result result))
           (begin
             (pp '(fuzzy-test FAILED))
             (pp 'OUTPUT:)
@@ -489,7 +585,15 @@
             ;(pp 'INSTRUCTIONS:)
             ;(for-each pp (map instruction-repr instructions))
             (find-minimal-example instructions)
-            #f))))
+            #f))
+        ((not (equal? expected-result proxied-result))
+          (pp '(fuzzy-test FAILED (proxied)))
+          (pp 'OUTPUT:)
+          (pp result)
+          (pp 'EXPECTED:)
+          (pp expected-result)
+          #f)
+        (else #t))))
 
   (define (fuzzy-test size repetitions)
     (let loop ((i 0))
@@ -697,6 +801,18 @@
     ((param-delete!) graph 0 2)
     (map (lambda (n) ((param-rank) graph n)) (iota 4)))
 
+  (define (proxy-test1)
+    (define graph (make-graph 0))
+    (add-edge! graph 0 1 simulate: #t)
+    (redirect! graph 1 2 simulate: #t)
+    (add-edge! graph 0 3 simulate: #t)
+    (redirect! graph 3 2 simulate: #t)
+    (remove-edge! graph 0 2 simulate: #t)
+
+    (if (not (equal? graph (make-graph 0)))
+      (pp (list 'proxy-test1 'FAILED))
+      (pp (list 'proxy-test1 'OK))))
+
   (define (run-all . tests)
     (for-each
       (lambda (test-data)
@@ -733,6 +849,8 @@
       (list-test test14)
       (list-test test15)
       (list-test test16)
-      (list-test test17))))
+      (list-test test17)))
+  
+  (proxy-test1))
 
-;(test)
+;;(test)

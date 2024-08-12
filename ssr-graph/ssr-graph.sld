@@ -4,6 +4,7 @@
     add-edge!
     remove-edge!
     redirect!
+    redirect-many!
     connected?)
   (import gambit)
   (include "ssr-graph.scm"))
