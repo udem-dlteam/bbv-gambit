@@ -405,7 +405,8 @@
                    (make-ssr-graph reachability-graph-dummy-source)        ;; 5 - ssr-graph
                    (make-table)                 ;; 6 - merge-mapping
                    (make-table)                 ;; 7 - version-lbl->type-table
-                   #f)))                        ;; 8 - new-bbs
+                   #f                           ;; 8 - new-bbs
+                   (make-table))))              ;; 9 - orig-lbl-mapping
     (if parent-bbs (bbs-new-bbs-set! parent-bbs new-bbs))
     new-bbs))
 
@@ -436,6 +437,7 @@
 (define (bbs-version-lbl->type-table bbs)  (vector-ref bbs 7))
 (define (bbs-new-bbs bbs)                  (vector-ref bbs 8))
 (define (bbs-new-bbs-set! bbs new-bbs)     (vector-set! bbs 8 new-bbs))
+(define (bbs-orig-lbl-mapping bbs)         (vector-ref bbs 9))
 
 (define (bbs-versions-of bbs lbl)
   (let* ((versions (bbs-versions bbs))
@@ -2603,7 +2605,7 @@
 
     (define-type queue-task bb version-lbl)
 
-    (define orig-lbl-mapping (make-table))
+    (define orig-lbl-mapping (bbs-orig-lbl-mapping new-bbs))
     (define (orig-lbl-mapping-set! lbl orig-lbl) (table-set! orig-lbl-mapping lbl orig-lbl))
     (define (orig-lbl-mapping-ref lbl) (table-ref orig-lbl-mapping lbl))
     (define (new-lbl! orig-lbl)
@@ -3770,111 +3772,44 @@
           types-lbl-vect
           types-distance-feeley-old)))
       ((#f)
-        (select-versions-to-merge-after-gc (make-versions-scorer)))
+        (select-versions-to-merge-after-gc merge-result-score))
       (else
        (error "unknown bbv-merge-strategy strategy" opt)))))
 
-(define (make-versions-scorer)
-  (declare (generic))
+(define merge-selection-dummy-lbl (expt 2 60))
 
-  (define default "8 -22 0 4 94 29 73 -97 -31 -11 42")
-  (define bbv-parameters (with-input-from-string (getenv "BBV_PARAMETERS" default) read-all))
-  (define limit-overshoot-weight (list-ref bbv-parameters 0))
-  (define limit-overshoot-offset (list-ref bbv-parameters 1))
-  (define type-specificity-weight (list-ref bbv-parameters 2))
-  (define type-specificity-offset (list-ref bbv-parameters 3))
-  (define type-overlap-weight (list-ref bbv-parameters 4))
-  (define type-overlap-offset (list-ref bbv-parameters 5))
-  (define type-fixnum-weight (list-ref bbv-parameters 6))
-  (define type-fixnum-offset (list-ref bbv-parameters 7))
-  (define type-flonum-weight (list-ref bbv-parameters 8))
-  (define type-flonum-offset (list-ref bbv-parameters 9))
-  (define accumulation-parameter (list-ref bbv-parameters 10))
+(define (merge-result-score tctx bbs new-bbs bb versions connected disconnected)
+  (define orig-lbl-mapping (bbs-orig-lbl-mapping new-bbs))
 
-  (define accumulate
-    (cond
-      ((< accumulation-parameter -50) min)
-      ((< accumulation-parameter 0) max)
-      ((< accumulation-parameter 50) +)
-      (else *)))
+  (define removed-checks 0)
+  (define unremoved-checks 0)
 
-  (define (types-fold fn base types)
-    (let ((len (vector-length types)))
-      (let loop ((i locenv-start-regs) (acc base))
-        (if (< i len)
-            (let ((type (vector-ref types (+ i 1))))
-              (loop (+ i locenv-entry-size)
-                    (fn acc type)))
-            acc))))
+  (define (removed-instr new-lbl)
+    (define version-bb (lbl-num->bb new-lbl new-bbs))
+    (define orig-lbl (table-ref orig-lbl-mapping new-lbl))
+    (define orig-bb (lbl-num->bb orig-lbl bbs))
+      (if version-bb
+        (let* ((instructions (cons (bb-branch-instr orig-bb) (bb-non-branch-instrs orig-bb)))
+               (new-instructions (cons (bb-branch-instr version-bb) (bb-non-branch-instrs version-bb))))
+          (- (length (filter (lambda (instr) (memq (gvm-instr-kind instr) '(apply close ifjump))) instructions))
+             (length (filter (lambda (instr) (memq (gvm-instr-kind instr) '(apply close ifjump))) new-instructions))))
+        0))
 
-  (define (locenv->types types)
-    (types-fold
-      (lambda (acc type) (cons type acc))
-      '()
-      types))
+  (for-each
+    (lambda (lbl)
+      (set! removed-checks (+ removed-checks (removed-instr lbl))))
+    (filter (lambda (l) (not (= l merge-selection-dummy-lbl))) connected))
 
-  (define (sum-metric metric types)
-    (types-fold
-      (lambda (acc type) (+ acc (metric type)))
-      0
-      types))
+  (for-each
+    (lambda (lbl)
+      (set! unremoved-checks (+ unremoved-checks (removed-instr lbl))))
+    (filter (lambda (l) (not (= l merge-selection-dummy-lbl))) disconnected))
 
-  (lambda (tctx bb versions)
-    (define (geomean values)
-      (expt (apply * values) (/ 1 (length values))))
-    (define (mean values) (/ (apply + values) (length values)))
-
-    (define (limit-overshoot) (- (bb-version-limit bb) (length versions)))
-
-    (define max-specificity (+ 1 (/ 1 number-of-possible-types)))
-    (define min-specificity (/ 1 number-of-possible-types))
-    (define (specificity-of type)
-      (cond
-        ((type-singleton? type) max-specificity)
-        ((type-top? type) min-specificity)
-        (else
-          (let ((count 0))
-            (for-each-not-mut-motley-bit
-              tctx
-              (lambda (_) (set! count (+ count 1)))
-              type
-              #t)
-            (- 1 (/ count number-of-possible-types))))))
-
-    (define (type-specificity versions)
-      (geomean (map (lambda (types) (sum-metric specificity-of types)) versions)))
-
-    (define (type-overlap)
-      ;; computes the specificity of the merge of all 1-to-1 combination of versions
-      (define overlaps
-        (let outter ((versions versions))
-          (if (null? versions)
-              '()
-              (let inner ((tail (cdr versions)))
-                (if (null? tail)
-                    (outter (cdr versions))
-                    (cons (types-merge2 tctx (car versions) (car tail) #f) (inner (cdr tail))))))))
-      (if (> (length overlaps) 0) (type-specificity overlaps) max-specificity))
-
-    (define (type-fixnum-count)
-      (define (count-fixnum type) (if (type-can-be-fixnum? tctx type) 1 0))
-      (mean (map (lambda (types) (sum-metric count-fixnum types)) versions)))
-
-    (define (type-flonum-count)
-      (define (count-flonum type) (if (type-can-be-flonum? tctx type) 1 0))
-      (mean (map (lambda (types) (sum-metric count-flonum types)) versions)))
-
-    (accumulate 
-      (+ (* limit-overshoot-weight (limit-overshoot)) limit-overshoot-offset)
-      (+ (* type-specificity-weight (type-specificity versions)) type-specificity-offset)
-      (+ (* type-overlap-weight (type-overlap)) type-overlap-offset)
-      (+ (* type-fixnum-weight (type-fixnum-count)) type-fixnum-offset)
-      (+ (* type-flonum-weight (type-flonum-count)) type-flonum-offset))))
+  (- removed-checks unremoved-checks))
 
 (define (select-versions-to-merge-after-gc score)
   (declare (generic))
 
-  (define dummy-lbl (expt 2 60))
   (define (select tctx bbs bb)
     (define new-bbs (bbs-new-bbs bbs))
     (let* ((type-lbl-alist (bbs-active-versions->list bbs bb))
@@ -3891,7 +3826,7 @@
                      (ilbl (cdr (vector-ref type-lbl-vect i)))
                      (jlbl (cdr (vector-ref type-lbl-vect j)))
                      (merged-types (types-merge-multi tctx (list itypes jtypes) #t))
-                     (merge-lbl (or (bbs-get-version-lbl bbs bb merged-types) dummy-lbl))
+                     (merge-lbl (or (bbs-get-version-lbl bbs bb merged-types) merge-selection-dummy-lbl))
                      (merged-types (or (bbs-type-of-version-lbl bbs merge-lbl) merged-types))
                      (effects (bbs-redirect-many! new-bbs (list ilbl jlbl) merge-lbl simulate: #t))
                      (connected (car effects))
@@ -3904,10 +3839,10 @@
                             (and (not (memq lbl disconnected))
                                  (memq lbl version-lbls-before-merge)))
                       (set! lbls-versions-after-merge (cons (cons lbl version) lbls-versions-after-merge)))))
-                (if (= merge-lbl dummy-lbl)
+                (if (= merge-lbl merge-selection-dummy-lbl)
                     (set! lbls-versions-after-merge (cons (cons merge-lbl merged-types) lbls-versions-after-merge)))
                 (cons
-                  (cons i (cons j lbls-versions-after-merge))
+                  (list i j lbls-versions-after-merge connected disconnected)
                   (loop i (+ j 1))))))))
       (let loop ((result-table result-table) (best #f) (best-score -inf.0))
         (if (null? result-table)
@@ -3915,141 +3850,18 @@
               (filter (lambda (i) (not (memq i best))) (iota (vector-length type-lbl-vect)))
               best)
             (let* ((result (car result-table))
-                   (i (car result))
-                   (j (cadr result))
-                   (lbls-versions-after-merge (cddr result))
+                   (i (list-ref result 0))
+                   (j (list-ref result 1))
+                   (lbls-versions-after-merge (list-ref result 2))
+                   (connected (list-ref result 3))
+                   (disconnected (list-ref result 4))
                    (versions-after-merge
                     (map cdr (list-sort (lambda (x y) (< (car x) (car y))) lbls-versions-after-merge)))
-                   (ij-score (score tctx bb versions-after-merge)))
+                   (ij-score (score tctx bbs new-bbs bb versions-after-merge connected disconnected)))
               (if (> ij-score best-score)
                   (loop (cdr result-table) (list i j) ij-score)
                   (loop (cdr result-table) best best-score)))))))
   select)
-
-(define (select-versions-to-merge-considering-merge-result tctx types-lbl-vect)
-
-  (declare (debug) (safe))
-  (declare (generic))
-
-  (define bbv-parameters
-    (with-input-from-string (getenv "BBV_PARAMETERS" "49 34 -34 -24") read-all))
-
-  (define (score-types types)
-    (types-fold
-     (lambda (acc type)
-       (+ acc (type-goodness type)))
-     0
-     types))
-
-  (define (type-cardinality-except-fixnum type)
-    (bit-count
-     (bitwise-and (- (expt 2 30) 1)
-                  (bitwise-ior (type-motley-mut-bitset type)
-                               (type-motley-not-mut-bitset type)))))
-
-  (define (fixnum-range-goodness type)
-    (let* ((fixnum-range (type-motley-fixnum-range type))
-           (fixnum-range-num (type-fixnum-range-numeric tctx type))
-           (lo (type-fixnum-range-lo fixnum-range-num))
-           (hi (type-fixnum-range-hi fixnum-range-num))
-           (n (+ 1 (- hi lo)))
-           (nb-bits (integer-length n)))
-      (+ (case (type-fixnum-range-lo fixnum-range)
-           ((>=) (list-ref bbv-parameters 2))
-           ((>) (list-ref bbv-parameters 3))
-           (else 0))
-         (case (type-fixnum-range-hi fixnum-range)
-           ((<=) (list-ref bbv-parameters 2))
-           ((<) (list-ref bbv-parameters 3))
-           (else 0))
-         nb-bits)))
-
-  (define (type-goodness type)
-    ;; 0 is highest goodness
-    (let ((t (type-motley-force tctx type)))
-      (+ (* (list-ref bbv-parameters 0)
-            (type-cardinality-except-fixnum t))
-         (* (list-ref bbv-parameters 1)
-            (fixnum-range-goodness t)))))
-
-  (define (types-fold fn base types)
-    (let ((len (vector-length types)))
-      (let loop ((i locenv-start-regs) (acc base))
-        (if (< i len)
-            (let ((type (vector-ref types (+ i 1))))
-              (loop (+ i locenv-entry-size)
-                    (fn acc type)))
-            acc))))
-
-  (define (types-length types)
-    (let ((len (vector-length types)))
-      (quotient (- len locenv-start-regs) locenv-entry-size)))
-
-  (let* ((details '())
-         (n (vector-length types-lbl-vect))
-         (score-of-all-versions 0)
-         (scores (make-vector n 0))
-         (types-tbl
-          (let ((types-tbl (make-table test: locenv-eqv?)))
-            (for-each
-             (lambda (i)
-               (let* ((types (car (vector-ref types-lbl-vect i)))
-                      (score (score-types types)))
-                 (table-set! types-tbl types i)
-                 (vector-set! scores i score)
-                 (set! score-of-all-versions
-                   (+ score-of-all-versions score))))
-             (iota n))
-            types-tbl)))
-
-    (define (score-merge i j)
-      (let* ((ti (vector-ref types-lbl-vect i))
-             (tj (vector-ref types-lbl-vect j))
-             (types-merged (types-merge-multi (list (car ti) (car tj)) #t))
-             (score-merged (score-types types-merged))
-             (score-of-all-versions-except-i-j
-              (- score-of-all-versions
-                 (+ (vector-ref scores i)
-                    (vector-ref scores j))))
-             (nb-versions-added
-              (let ((k (table-ref types-tbl types-merged i)))
-                (if (or (= i k) (= j k)) ;; not an existing version other than i and j?
-                    1
-                    0)))
-             (score
-              (+ score-of-all-versions-except-i-j
-                 (if (= nb-versions-added 0)
-                     0 ;; penalty for losing one more specialisation than strictly needed!
-                     score-merged))))
-        (if track-version-history?
-            (set! details
-                      (cons (string-append
-                             (format-gvm-lbl (cdr ti) '(new))
-                             " "
-                             (format-gvm-lbl (cdr tj) '(new))
-                             " = "
-                             (number->string score))
-                            details)))
-        score))
-
-    (let ((best-score 999999999)
-          (best-score-pair #f))
-
-      (for-each
-       (lambda (i)
-         (for-each
-          (lambda (j)
-            (let ((score (score-merge i j)))
-              (if (< score best-score)
-                  (begin
-                    (set! best-score score)
-                    (set! best-score-pair (list i j))))))
-            (iota i)))
-       (iota n))
-
-      (let* ((in best-score-pair)
-             (out (keep (lambda (i) (not (memv i in))) (iota n))))
-        (vector in out details)))))
 
 (define (select-versions-to-merge-using-distance tctx types-lbl-vect types-distance)
   (let* ((n (vector-length types-lbl-vect))
