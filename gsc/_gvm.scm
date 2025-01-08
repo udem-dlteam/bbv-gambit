@@ -2407,6 +2407,15 @@
 ;; Type analysis:
 ;; -------------
 
+(define total-merge-count 0)
+(define avoided-merge-by-ignored-jump-cascades 0)
+(define avoided-merge-by-searching-jump-cascades 0)
+
+(define (print-merge-avoidance-data)
+  (pp (list 'total-merge-count total-merge-count))
+  (pp (list 'avoided-merge-by-ignored-jump-cascades avoided-merge-by-ignored-jump-cascades))
+  (pp (list 'avoided-merge-by-searching-jump-cascades avoided-merge-by-searching-jump-cascades)))
+
 (define debug-bbv? #f)
 (define track-version-history? #f)
 (define track-version-history-for-visualization-tool? #f)
@@ -2489,6 +2498,18 @@
   (let* ((node (instr-comment-get (bb-label-instr bb) 'node))
          (env (node-env node)))
     (if env (version-limit env) 0)))
+
+(define (bb-jump-cascade? bb)
+  (let ((branch (bb-branch-instr bb))
+        (instructions (bb-non-branch-instrs bb)))
+    (and
+      (eq? (bb-label-kind bb) 'simple)
+      (not (first-class-jump? branch))
+      (null? instructions)
+      (eq? (gvm-instr-kind branch) 'jump)
+      (not (jump-ret branch))
+      (not (jump-poll? branch))
+      (jump-lbl? branch))))
 
 (define (show-version-history-of-lbl lbl)
   #t #;
@@ -3319,10 +3340,24 @@
     (define (bb-versions-index-table bb-versions)
       (vector-ref bb-versions 3))
 
-    (define (need-merge? bb)
+    (define (need-merge? bb ignore-jump-cascade?)
+      (define (total)
+        (let loop ((count 0)
+                   (it
+                    (table->list
+                      (bb-versions-active-versions
+                        (bbs-versions-of-bb bbs bb)))))
+          (if (null? it)
+              count
+              (let* ((type-lbl (car it))
+                     (bb (lbl-num->bb (cdr type-lbl) new-bbs)))
+                (if (and ignore-jump-cascade? bb (bb-jump-cascade? bb))
+                    (loop count (cdr it)) ;; don't count jump only in version limit
+                    (loop (+ count 1) (cdr it)))))))
+
       (let* ((lbl (bb-lbl-num bb))
-              (bb-versions (bbs-versions-of-bb bbs bb)))
-        (> (bbs-active-versions-length bbs bb) (max 1 (bb-version-limit bb)))))
+             (bb-versions (bbs-versions-of-bb bbs bb)))
+        (> (total) (max 1 (bb-version-limit bb)))))
 
     (define (onrevive lbl)
       (add-version-history-event reachable (orig-lbl-mapping-ref lbl) lbl)
@@ -3338,6 +3373,18 @@
         (add-version-history-event unreachable orig-lbl lbl)
         (bbs-update-lbl-reachability! bbs bb)))
     (define (onkill-many lbls) (for-each (lambda (l) (onkill l)) lbls))
+
+    (define (avoid-merge bb)
+      (let* ((lbl (bb-lbl-num bb))
+             (active-versions (bbs-active-versions->list bbs bb)))
+        ;; specialize all blocks that were not treated yet
+        ;; this allows to recognize some pending versions as
+        ;; a single jump, which are not counted in version limit
+        (for-each
+          (lambda (type-lbl) 
+            (if (new-lbl? (cdr type-lbl) new-bbs)
+              (walk-bb bb (car type-lbl) (cdr type-lbl))))
+          active-versions)))
 
     (define (merge bb)
       (let* ((lbl (bb-lbl-num bb))
@@ -3389,7 +3436,19 @@
                (types (bbs-type-of-version-lbl bbs version-lbl)))
 
           (when (bbs-reachable? new-bbs version-lbl)
-            (if (need-merge? bb) (merge bb))
+            (if (need-merge? bb #f)
+                (if (need-merge? bb #t)
+                    (begin
+                      (avoid-merge bb)
+                      (if (need-merge? bb #t)
+                          (begin
+                            (set! total-merge-count
+                                  (+ total-merge-count 1))
+                            (merge bb))
+                          (set! avoided-merge-by-searching-jump-cascades
+                                (+ avoided-merge-by-searching-jump-cascades 1))))
+                    (set! avoided-merge-by-ignored-jump-cascades
+                          (+ avoided-merge-by-ignored-jump-cascades 1))))
             (if (and (bbs-reachable? new-bbs version-lbl) (new-lbl? version-lbl new-bbs))
                 (walk-bb bb types version-lbl)))
 
@@ -3449,6 +3508,7 @@
 ;;  (write-bbs bbs '() (current-output-port))
 
   (walk-bbs bbs)
+  (print-merge-avoidance-data)
 
   #;
   (if track-version-history?
