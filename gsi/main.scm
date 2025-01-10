@@ -1010,7 +1010,8 @@ usage-end
                            (pkg-config string)
                            (pkg-config-path string)
                            ;; bbv options
-                           (gvm-interpret) (bbv-json-trace) (bbv-merge-strategy symbol))))
+                           (gvm-interpret) (bbv-json-trace) (bbv-merge-strategy symbol)
+                           (avoid-merge-jump-cascade))))
 
                    ;; parse command line to try to find the -target option
                    (split-command-line
