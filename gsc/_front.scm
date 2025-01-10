@@ -108,7 +108,7 @@
                       (set! compiler-options-bbv-merge-strategy (cadr opt))
                       #t)
                     ((avoid-merge-jump-cascade)
-                      (set! compiler-options-avoid-merge-jump-cascade (cadr opt))
+                      (set! compiler-options-avoid-merge-jump-cascade #t)
                       #t)
                      ((gvm-interpret)
                       (set! compiler-option-gvm-interpret      #t)
