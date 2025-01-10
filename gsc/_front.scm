@@ -107,6 +107,9 @@
                      ((bbv-merge-strategy)
                       (set! compiler-options-bbv-merge-strategy (cadr opt))
                       #t)
+                    ((avoid-merge-jump-cascade)
+                      (set! compiler-options-avoid-merge-jump-cascade (cadr opt))
+                      #t)
                      ((gvm-interpret)
                       (set! compiler-option-gvm-interpret      #t)
                       #t)
@@ -136,7 +139,7 @@
                          o l module-ref linker-name prelude postlude
                          cc cc-options ld-options-prelude ld-options
                          pkg-config pkg-config-path asm sequence-number
-                         bbv-merge-strategy)
+                         bbv-merge-strategy avoid-merge-jump-cascade)
                       #t) ;; these options are innocuous
                      (else
                       ;; OK if the option is a target specific option
@@ -168,6 +171,7 @@
   (set! compiler-option-gvm-interpret      #f)
   (set! compiler-option-bbv-json-trace     #f)
   (set! compiler-options-bbv-merge-strategy #f)
+  (set! compiler-options-avoid-merge-jump-cascade #f)
   (set! compiler-option-dg                 #f)
   (set! compiler-option-debug              #f)
   (set! compiler-option-debug-location     #f)
@@ -184,6 +188,7 @@
 (define compiler-option-gvm-interpret      #f)
 (define compiler-option-bbv-json-trace     #f)
 (define compiler-options-bbv-merge-strategy #f)
+(define compiler-options-avoid-merge-jump-cascade #f)
 (define compiler-option-dg                 #f)
 (define compiler-option-debug              #f)
 (define compiler-option-debug-location     #f)
@@ -345,8 +350,10 @@
                (if compiler-option-dg
                    (set! dependency-graph (make-table 'test: eq?)))
 
-               (let ((opt (assq 'bbv-merge-strategy opts)))
-                 (set-bbv-merge-strategy! (and opt (cadr opt))))
+               (let ((opt (assq 'bbv-merge-strategy opts))
+                     (avoid-merge (assq 'avoid-merge-jump-cascade opts)))
+                 (set-bbv-merge-strategy! (and opt (cadr opt)) (and avoid-merge (cadr avoid-merge))))
+
                (if compiler-option-bbv-json-trace (track-version-history-for-visualization-tool?-set! #t))
 
                (let* ((meta-info
@@ -375,7 +382,10 @@
                        (vector module-procs 0 0))) ;; max-label-count, max-branch-count
 
                  (if compiler-option-gvm-interpret
-                     (gvm-interpret gvm-interpret-ctx))
+                    (gvm-interpret gvm-interpret-ctx))
+
+                 (if compiler-options-avoid-merge-jump-cascade
+                    (print-merge-avoidance-data))
 
                  (if compiler-option-report
                      (generate-report env))

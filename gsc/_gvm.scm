@@ -3508,7 +3508,6 @@
 ;;  (write-bbs bbs '() (current-output-port))
 
   (walk-bbs bbs)
-  (print-merge-avoidance-data)
 
   #;
   (if track-version-history?
@@ -3795,8 +3794,10 @@
           (- (* acc 100) (* (list-ref bbv-parameters 5) (+ 1 ut1 ut2)))))))
 
 (define select-versions-to-merge #f)
+(define bbv-jump-cascade-avoid-merge #f)
 
-(define (set-bbv-merge-strategy! opt)
+(define (set-bbv-merge-strategy! opt avoid-merge)
+  (set! bbv-jump-cascade-avoid-merge avoid-merge)
   (set! select-versions-to-merge
     (case opt
       ((entropy)
