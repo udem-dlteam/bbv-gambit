@@ -70,6 +70,8 @@ Auxiliary information options
     -cfg             Write GVM control flow graph to file.cfg
     -dg              Write variable/procedure dependency graph to file.dg
     -gvm-interpret   Execute CFG with gvm interpreter
+    -bbv-merge-strategy name    Use strategy 'name' for BBV
+    -avoid-merge-jump-cascade   BBV does not count jump cascade in merge
     -bbv-json-trace  Dump a json file tracing the SBBV algorithm
     -expansion       Show source code after code transformations
     -report          Show global variable usage report
